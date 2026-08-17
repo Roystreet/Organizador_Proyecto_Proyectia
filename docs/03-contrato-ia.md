@@ -96,13 +96,14 @@ Límites sugeridos por sección, para que el payload no se dispare:
 | `decisiones` | 10 |
 | `tendencia` | 12 puntos (12 semanas) |
 | `proyectos` (análisis global) | 40 en formato compacto |
-| `documento.texto` (CV) | 25 000 caracteres, con bandera `truncado` |
+| `insumo.texto` (CV o descripción) | 25 000 caracteres, con bandera `truncado` |
+| `personas_disponibles` (perfiles) | 40, internos primero, habilidades de nivel ≥ 2 |
 
 Con esos topes, un `salud_proyecto` se queda entre 4 000 y 9 000 tokens de entrada.
 
 ---
 
-## 3. Los ocho análisis
+## 3. Los diez análisis
 
 | Tipo | Alcance | Entra | Sale |
 |---|---|---|---|
@@ -111,9 +112,11 @@ Con esos topes, un `salud_proyecto` se queda entre 4 000 y 9 000 tokens de entra
 | `match_persona_tarea` | 1 tarea o proyecto | Requerimiento + candidatos con experticia, carga e historial | Ranking con puntaje de ajuste, brechas y riesgo de sobrecarga |
 | `patrones_globales` | Portafolio | Agregados cruzados + patrones conocidos | Patrones con clave estable, evidencia y confianza |
 | `priorizacion_diaria` | Portafolio | Capacidad del día + tareas y asuntos candidatos | Máximo 7 acciones, foco del día, qué NO hacer hoy |
-| `perfil_cv` | 1 documento | Texto del CV + catálogo de habilidades + necesidades actuales | Perfil, habilidades con nivel, experiencias, fortalezas, aportes y preguntas sugeridas |
+| `perfil_cv` | 1 persona | Texto pegado (CV o descripción) + catálogos de habilidades y sectores + lo ya registrado de esa persona | Perfil, habilidades con nivel, **sectores que cubre**, experiencias, fortalezas, aportes y preguntas sugeridas |
 | `planteamiento_proyecto` | 1 proyecto | `descripcion_libre` (lo que el usuario escribió al crear), objetivo, fechas, equipo, hitos y tareas existentes | Planteamiento, `de_que_trata`, objetivo sugerido, supuestos, hitos propuestos (con `ref` local) y tareas propuestas (con `hito_ref`), preguntas por resolver |
 | `tareas_sugeridas` | 1 proyecto | Estado ACTUAL: métricas de tareas, hitos y tareas existentes con ids reales, equipo | Hasta 10 tareas que faltan para avanzar, con justificación, `hito_id` y `responsable_sugerido_id` reales |
+| `preguntas_encuadre` | 1 proyecto | Lo poco que hay al crear: descripción libre, objetivo, fechas, sectores, y las preguntas ya respondidas | Entre 4 y 8 preguntas cuya respuesta cambia el plan, con su motivo, tema e importancia, más los supuestos que se tomarán si quedan sin responder |
+| `perfiles_requeridos` | 1 proyecto | Proyecto con sectores e hitos + respuestas a las preguntas + catálogos + hasta 40 personas reales con su experticia y carga | Perfiles con rol, seniority, sector, cantidad, habilidades con nivel y criticidad, y candidatos reales del directorio con puntaje y brechas |
 
 ### 3.1 Flujo revisar-y-aceptar (`planteamiento_proyecto` y `tareas_sugeridas`)
 
@@ -197,7 +200,7 @@ const datos = JSON.parse(respuesta.choices[0].message.content!);
   └───────────┬───────────────┘
               │
               ▼
-   validar con Zod  ── falla → reintento (máx. 2) → si falla, estado='error'
+   validar con Zod  ── si falla: se guarda estado='error' y se lanza
               │
               ▼
   ┌───────────────────────────┐
@@ -205,8 +208,6 @@ const datos = JSON.parse(respuesta.choices[0].message.content!);
   │  analisis_ia (payload,    │
   │   respuesta, tokens, $)   │
   │  recomendaciones_ia (N)   │
-  │  patrones_detectados      │
-  │   (upsert por clave)      │
   │  proyectos.salud ← puntaje│
   └───────────┬───────────────┘
               │
@@ -230,7 +231,9 @@ El hash del payload es lo que evita pagar dos veces por el mismo análisis: si n
 | `cuellos_botella` | Manual, o cuando una tarea lleva más de N días bloqueada |
 | `patrones_globales` | Semanal o mensual: necesita volumen para tener sentido |
 | `match_persona_tarea` | Bajo demanda, al crear o reasignar una tarea |
-| `perfil_cv` | Al subir un documento a `persona_documentos` |
+| `perfil_cv` | Al crear una persona (redirect con `?perfil=auto`) y bajo demanda desde su ficha |
+| `preguntas_encuadre` | Paso 2 del asistente de creación, y bajo demanda desde el detalle |
+| `perfiles_requeridos` | Paso 4 del asistente de creación |
 | `planteamiento_proyecto` | Automático al crear un proyecto (redirect con `?planteamiento=auto`), y bajo demanda desde el detalle |
 | `tareas_sugeridas` | Bajo demanda, botón «Sugerir tareas según estado» en el detalle |
 
@@ -249,3 +252,27 @@ La selección de modelo por tipo está implementada en `src/lib/ai/modelos.ts` (
 | `priorizacion_diaria` | `OPENAI_MODEL_BARATO` | Corre todos los días y es más mecánico |
 
 Las variables específicas caen en `OPENAI_MODEL` si están vacías.
+
+
+---
+
+## 7. El bucle de las preguntas de encuadre
+
+`proyecto_preguntas` no es un registro pasivo: las respuestas viajan en el
+payload de `planteamiento_proyecto` y de `perfiles_requeridos`. Eso significa
+que **responder una pregunta invalida la caché de esos análisis por sí solo**,
+igual que dar feedback a una recomendación invalida la de `salud_proyecto`. No
+hay que acordarse de forzar nada: el siguiente análisis ya sale mejor.
+
+El `UNIQUE (proyecto_id, pregunta(180))` hace que regenerar preguntas sea
+idempotente: el `ON DUPLICATE KEY UPDATE` refresca motivo, tema e importancia y
+**nunca toca `respuesta` ni `estado`**. Volver a pulsar «generar» no borra lo
+que ya contestaste.
+
+## 8. Análisis con alcance de persona
+
+`ejecutarAnalisis` recibe un `entidadId` y cada definición declara en qué
+columna de `analisis_ia` vive ese id (`columnaEntidad`: `proyecto_id` o
+`persona_id`). Cierra a la vez el `WHERE` de la caché y el `INSERT`: con la
+columna equivocada el análisis se guardaría huérfano y la caché no acertaría
+nunca, porque en SQL `NULL = NULL` es UNKNOWN, no true.

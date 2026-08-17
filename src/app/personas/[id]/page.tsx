@@ -7,10 +7,14 @@ import {
 import EditOutlined from '@mui/icons-material/EditOutlined';
 import ChipSemantico from '@/components/ChipSemantico';
 import PuntoSalud from '@/components/PuntoSalud';
+import PanelPerfilPersona from '@/components/PanelPerfilPersona';
 import {
   personaPorId, habilidadesDePersona, insumosDePersona,
-  experienciasDePersona, proyectosDePersona,
+  experienciasDePersona, proyectosDePersona, sectoresDePersona,
+  ultimoAnalisisDePersona,
 } from '@/lib/consultas';
+import { normalizarJson } from '@/lib/ai/cliente';
+import type { RespuestaPerfilCvValidada } from '@/lib/ai/validacion';
 import { fmtFecha } from '@/lib/formato';
 import type { Salud } from '@/lib/ai/tipos';
 
@@ -28,20 +32,37 @@ const ICONO_INSUMO: Record<string, string> = {
 const iniciales = (n: string) =>
   n.split(' ').filter(Boolean).slice(0, 2).map((x) => x[0]).join('').toUpperCase();
 
-export default async function DetallePersona({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export default async function DetallePersona({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ perfil?: string }>;
+}) {
+  const [{ id }, consulta] = await Promise.all([params, searchParams]);
   const personaId = Number(id);
   if (!Number.isInteger(personaId)) notFound();
 
   const persona = await personaPorId(personaId);
   if (!persona) notFound();
 
-  const [habilidades, insumos, experiencias, proyectos] = await Promise.all([
-    habilidadesDePersona(personaId),
-    insumosDePersona(personaId),
-    experienciasDePersona(personaId),
-    proyectosDePersona(personaId),
-  ]);
+  const [habilidades, insumos, experiencias, proyectos, sectores, analisisPerfil] =
+    await Promise.all([
+      habilidadesDePersona(personaId),
+      insumosDePersona(personaId),
+      experienciasDePersona(personaId),
+      proyectosDePersona(personaId),
+      sectoresDePersona(personaId),
+      ultimoAnalisisDePersona(personaId, 'perfil_cv'),
+    ]);
+
+  const inicialPerfil = analisisPerfil
+    ? {
+        analisis_id: analisisPerfil.id,
+        datos: normalizarJson(analisisPerfil.respuesta_json) as RespuestaPerfilCvValidada,
+        modelo: analisisPerfil.modelo,
+      }
+    : null;
 
   const fortalezas = habilidades.filter((h) => h.es_fortaleza);
   const otras = habilidades.filter((h) => !h.es_fortaleza);
@@ -83,6 +104,12 @@ export default async function DetallePersona({ params }: { params: Promise<{ id:
           </Button>
         </Box>
       </Box>
+
+      <PanelPerfilPersona
+        personaId={personaId}
+        autoAbrir={consulta.perfil === 'auto'}
+        inicial={inicialPerfil}
+      />
 
       <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', lg: '3fr 2fr' } }}>
         {/* Columna principal */}
@@ -175,6 +202,30 @@ export default async function DetallePersona({ params }: { params: Promise<{ id:
 
         {/* Columna lateral */}
         <Stack spacing={2}>
+          {sectores.length > 0 && (
+            <Card>
+              <CardContent>
+                <Typography variant="h4" sx={{ mb: 1 }}>Sectores que cubre</Typography>
+                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                  {sectores.map((s) => (
+                    <Tooltip key={s.slug}
+                             title={s.evidencia ?? `Nivel ${s.nivel}/5${s.validado ? ' · validado' : ''}`}>
+                      <Chip
+                        size="small"
+                        label={`${s.nombre} · ${s.nivel}`}
+                        color={s.es_principal ? 'primary' : 'default'}
+                        variant={s.es_principal ? 'filled' : 'outlined'}
+                      />
+                    </Tooltip>
+                  ))}
+                </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                  El sector es dónde ha trabajado; las habilidades son qué sabe hacer.
+                </Typography>
+              </CardContent>
+            </Card>
+          )}
+
           {habilidades.length > 0 && (
             <Card>
               <CardContent>

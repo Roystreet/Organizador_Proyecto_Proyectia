@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
+import type { PoolConnection } from 'mysql2/promise';
 import { pool, fila } from '@/db';
 import { registrarEnBitacora } from '@/lib/bitacora';
 import { texto, entero, numero, erroresDeZod, esDuplicado } from './util';
@@ -25,6 +26,9 @@ const zPersona = z.object({
   disponibilidadHorasSemana: z.number().int().min(0).max(120, 'Máximo 120 h/semana').nullable(),
   ubicacion: z.string().max(120).nullable(),
   bio: z.string().max(5000).nullable(),
+  linkedinUrl: z.string().max(255, 'Máximo 255 caracteres').nullable(),
+  portafolioUrl: z.string().max(255, 'Máximo 255 caracteres').nullable(),
+  sectorIds: z.array(z.number().int().positive()).max(10, 'Máximo 10 sectores'),
 });
 
 function leerFormulario(datos: FormData) {
@@ -42,6 +46,11 @@ function leerFormulario(datos: FormData) {
     disponibilidadHorasSemana: entero(datos, 'disponibilidadHorasSemana'),
     ubicacion: texto(datos, 'ubicacion'),
     bio: texto(datos, 'bio'),
+    linkedinUrl: texto(datos, 'linkedinUrl'),
+    portafolioUrl: texto(datos, 'portafolioUrl'),
+    // Checkboxes con el mismo name: getAll devuelve todos los marcados.
+    sectorIds: datos.getAll('sectorIds')
+      .map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0),
   });
 }
 
@@ -52,6 +61,30 @@ async function emailOcupado(email: string | null, ignorarId?: number): Promise<b
     ignorarId ? [email, ignorarId] : [email],
   );
   return r !== null;
+}
+
+/**
+ * Deja `persona_sectores` igual a lo marcado en el formulario.
+ *
+ * Solo toca lo capturado a mano (`origen = 'manual'`): lo que puso la IA vive
+ * en el mismo sitio pero con otro origen, y desmarcar una casilla del
+ * formulario no debe borrar lo que el perfilado dedujo y se aceptó aparte.
+ */
+async function sincronizarSectores(
+  conexion: PoolConnection, personaId: number, sectorIds: number[],
+) {
+  await conexion.query(
+    `DELETE FROM persona_sectores WHERE persona_id = ? AND origen = 'manual'`,
+    [personaId],
+  );
+  for (const sectorId of sectorIds) {
+    await conexion.query(
+      `INSERT INTO persona_sectores (persona_id, sector_id, nivel, origen, validado)
+       VALUES (?,?,3,'manual',1)
+       ON DUPLICATE KEY UPDATE origen = 'manual', validado = 1`,
+      [personaId, sectorId],
+    );
+  }
 }
 
 export async function crearPersona(
@@ -73,15 +106,17 @@ export async function crearPersona(
     const [res] = await conexion.query(
       `INSERT INTO personas
          (nombre, apellido, email, telefono, empresa_id, tipo_relacion, rol_principal,
-          seniority, anios_experiencia, disponibilidad_horas_semana, ubicacion, bio)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          seniority, anios_experiencia, disponibilidad_horas_semana, ubicacion, bio,
+          linkedin_url, portafolio_url)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         p.nombre, p.apellido, p.email, p.telefono, p.empresaId, p.tipoRelacion,
         p.rolPrincipal, p.seniority, p.aniosExperiencia, p.disponibilidadHorasSemana,
-        p.ubicacion, p.bio,
+        p.ubicacion, p.bio, p.linkedinUrl, p.portafolioUrl,
       ],
     );
     personaId = (res as { insertId: number }).insertId;
+    await sincronizarSectores(conexion, personaId, p.sectorIds);
     await registrarEnBitacora(conexion, {
       entidadTipo: 'persona', entidadId: personaId,
       accion: 'crear', valorNuevo: [p.nombre, p.apellido].filter(Boolean).join(' '),
@@ -96,7 +131,9 @@ export async function crearPersona(
   }
 
   revalidatePath('/personas');
-  redirect(`/personas/${personaId}`);
+  // `?perfil=auto` abre el panel de perfil con IA al llegar al detalle, igual
+  // que `?planteamiento=auto` hace al crear un proyecto.
+  redirect(`/personas/${personaId}?perfil=auto`);
 }
 
 export async function actualizarPersona(
@@ -122,14 +159,16 @@ export async function actualizarPersona(
       `UPDATE personas SET
          nombre = ?, apellido = ?, email = ?, telefono = ?, empresa_id = ?,
          tipo_relacion = ?, rol_principal = ?, seniority = ?, anios_experiencia = ?,
-         disponibilidad_horas_semana = ?, ubicacion = ?, bio = ?
+         disponibilidad_horas_semana = ?, ubicacion = ?, bio = ?,
+         linkedin_url = ?, portafolio_url = ?
        WHERE id = ?`,
       [
         p.nombre, p.apellido, p.email, p.telefono, p.empresaId, p.tipoRelacion,
         p.rolPrincipal, p.seniority, p.aniosExperiencia, p.disponibilidadHorasSemana,
-        p.ubicacion, p.bio, id,
+        p.ubicacion, p.bio, p.linkedinUrl, p.portafolioUrl, id,
       ],
     );
+    await sincronizarSectores(conexion, id, p.sectorIds);
     await registrarEnBitacora(conexion, {
       entidadTipo: 'persona', entidadId: id,
       accion: 'actualizar', valorNuevo: [p.nombre, p.apellido].filter(Boolean).join(' '),

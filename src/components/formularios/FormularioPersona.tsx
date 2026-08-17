@@ -3,7 +3,8 @@
 import * as React from 'react';
 import { useActionState } from 'react';
 import {
-  Alert, Box, Button, Card, CardContent, CircularProgress, MenuItem, TextField,
+  Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress,
+  FormControlLabel, MenuItem, TextField, Typography,
 } from '@mui/material';
 import SaveOutlined from '@mui/icons-material/SaveOutlined';
 import { crearPersona, actualizarPersona } from '@/lib/acciones/personas';
@@ -29,19 +30,34 @@ export interface ValoresPersona {
   disponibilidad_horas_semana: number | null;
   ubicacion: string | null;
   bio: string | null;
+  linkedin_url: string | null;
+  portafolio_url: string | null;
 }
 
 /** Alta y edición de personas del directorio CRM. */
 export default function FormularioPersona({
   empresas,
+  sectores,
   persona,
+  sectoresMarcados = [],
 }: {
   empresas: { id: number; nombre: string }[];
+  sectores: { id: number; nombre: string }[];
   persona?: ValoresPersona;
+  /** Ids de sectores capturados a mano; los que dedujo la IA no se tocan aquí. */
+  sectoresMarcados?: number[];
 }) {
   const accion = persona ? actualizarPersona.bind(null, persona.id) : crearPersona;
   const [estado, enviar, enviando] = useActionState(accion, ESTADO_INICIAL);
   const error = (campo: string) => estado.errores?.[campo];
+  const [marcados, setMarcados] = React.useState<Set<number>>(new Set(sectoresMarcados));
+
+  const alternarSector = (id: number) =>
+    setMarcados((s) => {
+      const copia = new Set(s);
+      if (copia.has(id)) copia.delete(id); else copia.add(id);
+      return copia;
+    });
 
   return (
     <Card>
@@ -123,6 +139,46 @@ export default function FormularioPersona({
             defaultValue={persona?.bio ?? ''}
             sx={{ gridColumn: '1 / -1' }}
           />
+
+          <TextField
+            name="linkedinUrl" label="LinkedIn" error={Boolean(error('linkedinUrl'))}
+            helperText={error('linkedinUrl')}
+            defaultValue={persona?.linkedin_url ?? ''}
+          />
+          <TextField
+            name="portafolioUrl" label="Portafolio o sitio web"
+            error={Boolean(error('portafolioUrl'))} helperText={error('portafolioUrl')}
+            defaultValue={persona?.portafolio_url ?? ''}
+          />
+
+          {/* Sectores. Un checkbox oculto por marcado: FormData.getAll los recoge. */}
+          <Box sx={{ gridColumn: '1 / -1' }}>
+            <Typography variant="overline" color="text.secondary">
+              Sectores que cubre
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.75 }}>
+              En qué industrias ha trabajado. Es distinto de lo que sabe hacer: eso son
+              las habilidades, y las puede deducir la IA desde su CV.
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+              {sectores.map((s) => (
+                <Chip
+                  key={s.id}
+                  label={s.nombre}
+                  size="small"
+                  onClick={() => alternarSector(s.id)}
+                  color={marcados.has(s.id) ? 'primary' : 'default'}
+                  variant={marcados.has(s.id) ? 'filled' : 'outlined'}
+                />
+              ))}
+            </Box>
+            {[...marcados].map((id) => (
+              <input key={id} type="hidden" name="sectorIds" value={id} />
+            ))}
+            {error('sectorIds') && (
+              <Typography variant="caption" color="error">{error('sectorIds')}</Typography>
+            )}
+          </Box>
 
           {estado.mensaje && !estado.ok && (
             <Alert severity="error" sx={{ gridColumn: '1 / -1' }}>{estado.mensaje}</Alert>

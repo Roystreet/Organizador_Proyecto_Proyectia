@@ -1,12 +1,12 @@
 import Link from 'next/link';
 import { Box, Breadcrumbs, Stack, Typography } from '@mui/material';
 import FormularioPersona from '@/components/formularios/FormularioPersona';
-import { opcionesEmpresas } from '@/lib/consultas';
+import { opcionesEmpresas, listaSectores } from '@/lib/consultas';
 
 export const dynamic = 'force-dynamic';
 
 export default async function NuevaPersona() {
-  const empresas = await opcionesEmpresas();
+  const [empresas, sectores] = await Promise.all([opcionesEmpresas(), listaSectores()]);
 
   return (
     <Stack spacing={2.5} sx={{ maxWidth: 900 }}>
@@ -17,10 +17,12 @@ export default async function NuevaPersona() {
         </Breadcrumbs>
         <Typography variant="h2">Nueva persona</Typography>
         <Typography color="text.secondary" variant="body2">
-          Agrega a alguien al directorio: interno, freelance, cliente o cualquier involucrado.
+          Agrega a alguien al directorio: interno, freelance, cliente o cualquier
+          involucrado. Al guardar podrás pegar su CV y dejar que la IA construya su
+          perfil: habilidades, sectores y qué conviene preguntarle.
         </Typography>
       </Box>
-      <FormularioPersona empresas={empresas} />
+      <FormularioPersona empresas={empresas} sectores={sectores} />
     </Stack>
   );
 }

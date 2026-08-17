@@ -6,7 +6,7 @@ import {
 import PersonAddOutlined from '@mui/icons-material/PersonAddOutlined';
 import ChipSemantico from '@/components/ChipSemantico';
 import BarraFiltrosPersonas from '@/components/BarraFiltrosPersonas';
-import { listaPersonas, opcionesEmpresas, listaHabilidades } from '@/lib/consultas';
+import { listaPersonas, opcionesEmpresas, listaHabilidades, listaSectores } from '@/lib/consultas';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,18 +16,20 @@ const iniciales = (n: string) =>
 export default async function Personas({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; tipo?: string; empresa?: string; habilidad?: string }>;
+  searchParams: Promise<{ q?: string; tipo?: string; empresa?: string; habilidad?: string; sector?: string }>;
 }) {
   const filtros = await searchParams;
-  const [personas, empresas, habilidades] = await Promise.all([
+  const [personas, empresas, habilidades, sectores] = await Promise.all([
     listaPersonas({
       q: filtros.q,
       tipoRelacion: filtros.tipo,
       empresaId: filtros.empresa ? Number(filtros.empresa) : undefined,
       habilidadId: filtros.habilidad ? Number(filtros.habilidad) : undefined,
+      sectorId: filtros.sector ? Number(filtros.sector) : undefined,
     }),
     opcionesEmpresas(),
     listaHabilidades(),
+    listaSectores(),
   ]);
 
   return (
@@ -45,7 +47,7 @@ export default async function Personas({
         </Button>
       </Box>
 
-      <BarraFiltrosPersonas empresas={empresas} habilidades={habilidades} />
+      <BarraFiltrosPersonas empresas={empresas} habilidades={habilidades} sectores={sectores} />
 
       <Card>
         <CardContent sx={{ overflowX: 'auto' }}>

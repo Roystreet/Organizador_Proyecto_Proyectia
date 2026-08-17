@@ -5,9 +5,15 @@ import {
   tendenciaDeProyecto, eventosDeProyecto, decisionesDeProyecto,
   habilidadesRequeridas, patronesActivos, filasRecomendacionesPrevias,
 } from './consultasIa';
-import { ProyectoNoEncontrado } from './errores';
+import {
+  listaSectores, sectoresDePersona, sectoresDemandados, habilidadesDemandadas,
+  personaParaPerfil, habilidadesRegistradas, experienciasDePersona, listaHabilidades,
+  sectoresDeProyecto, preguntasDeProyecto, personasParaAsignar,
+} from '@/lib/consultas';
+import { ProyectoNoEncontrado, PersonaNoEncontrada } from './errores';
 import type {
   PayloadSaludProyecto, PayloadPlanteamientoProyecto, PayloadTareasSugeridas,
+  PayloadPerfilCv, PayloadPreguntasEncuadre, PayloadPerfilesRequeridos,
   MetaPayload, ContextoOrganizacion, TareaResumen,
   MetricasTareas, MetricasAsuntos, MetricasActividad, EstadoTarea, Prioridad,
 } from './tipos';
@@ -16,7 +22,11 @@ import type { FilaTarea, FilaMiembro } from '@/lib/consultas';
 export const CONTRATO = 'v1';
 
 /** Topes por sección. Ver docs/03-contrato-ia.md § presupuesto de tamaño. */
-const TOPES = { tareas: 15, asuntos: 15, eventos: 30, decisiones: 10, tendencia: 12 };
+const TOPES = {
+  tareas: 15, asuntos: 15, eventos: 30, decisiones: 10, tendencia: 12,
+  /** Texto del CV o descripción. Ver docs/03-contrato-ia.md § presupuesto. */
+  textoInsumo: 25_000,
+};
 
 const hoyISO = () => new Date().toISOString().slice(0, 10);
 
@@ -219,6 +229,9 @@ export async function payloadPlanteamientoProyecto(proyectoId: number): Promise<
       estado: p.estado,
       prioridad: p.prioridad,
       descripcion_libre: p.descripcion,
+      // El resumen anterior viaja para que el modelo lo mejore en vez de
+      // reescribirlo de cero, y para que aplicar uno invalide la caché.
+      resumen_ia_previo: p.resumen_ia,
       objetivo: p.objetivo,
       fechas: { inicio: p.fecha_inicio, fin_estimada: p.fecha_fin_estimada },
       equipo: equipo.map(aMiembroEquipo),
@@ -413,4 +426,194 @@ function desviacion(p: { fecha_inicio: string | null; fecha_fin_estimada: string
   if (t === null) return null;
   const avance = p.tareas_total > 0 ? Math.round((p.tareas_completadas / p.tareas_total) * 100) : 0;
   return t - avance;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  perfil_cv                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Payload del perfilado de una persona.
+ *
+ * El insumo es texto pegado (un CV o una descripción libre), no un archivo.
+ * Los catálogos viajan enteros para que el modelo reutilice slugs en vez de
+ * inventar variantes de lo que ya existe, y `registrado` evita que al
+ * re-ejecutar el análisis repita o contradiga lo que ya validamos a mano.
+ */
+export async function payloadPerfilCv(
+  personaId: number,
+  insumo: { texto: string; notas: string | null },
+): Promise<PayloadPerfilCv> {
+  const p = await personaParaPerfil(personaId);
+  if (!p) throw new PersonaNoEncontrada(personaId);
+
+  const [
+    organizacion, habilidades, sectores, experiencias,
+    catHabilidades, catSectores, necesidades, demandados,
+  ] = await Promise.all([
+    contextoOrganizacion(),
+    habilidadesRegistradas(personaId),
+    sectoresDePersona(personaId),
+    experienciasDePersona(personaId),
+    listaHabilidades(),
+    listaSectores(),
+    habilidadesDemandadas(),
+    sectoresDemandados(),
+  ]);
+
+  const texto = insumo.texto.trim();
+  const truncado = texto.length > TOPES.textoInsumo;
+
+  return {
+    meta: meta('perfil_cv'),
+    organizacion,
+    persona: {
+      id: p.id,
+      nombre_completo: p.nombre_completo,
+      tipo_relacion: p.tipo_relacion,
+      rol_principal: p.rol_principal,
+      seniority: p.seniority,
+      anios_experiencia: p.anios_experiencia,
+      ubicacion: p.ubicacion,
+      empresa: p.empresa,
+      bio: p.bio,
+    },
+    insumo: {
+      texto: truncado ? texto.slice(0, TOPES.textoInsumo) : texto,
+      truncado,
+      notas: insumo.notas?.trim() || null,
+      origen: 'texto_pegado',
+    },
+    registrado: {
+      habilidades: habilidades.map((h) => ({
+        slug: h.slug, nombre: h.nombre, nivel: h.nivel, validado: h.validado === 1,
+      })),
+      sectores: sectores.map((s) => ({ slug: s.slug, nombre: s.nombre, nivel: s.nivel })),
+      experiencias: experiencias.map((e) => ({ empresa: e.empresa_nombre, cargo: e.cargo })),
+    },
+    catalogo_habilidades: catHabilidades.map((h) => ({
+      slug: h.slug, nombre: h.nombre, tipo: h.tipo,
+    })),
+    catalogo_sectores: catSectores.map((s) => ({ slug: s.slug, nombre: s.nombre })),
+    necesidades_actuales: necesidades,
+    sectores_demandados: demandados,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  preguntas_encuadre                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Payload del paso 2 del asistente: lo que hay y lo que ya se preguntó. */
+export async function payloadPreguntasEncuadre(
+  proyectoId: number,
+): Promise<PayloadPreguntasEncuadre> {
+  const p = await proyectoPorId(proyectoId);
+  if (!p) throw new ProyectoNoEncontrado(proyectoId);
+
+  const [organizacion, sectores, preguntas] = await Promise.all([
+    contextoOrganizacion(),
+    sectoresDeProyecto(proyectoId),
+    preguntasDeProyecto(proyectoId),
+  ]);
+
+  return {
+    meta: meta('preguntas_encuadre'),
+    organizacion,
+    proyecto: {
+      id: p.id,
+      codigo: p.codigo,
+      nombre: p.nombre,
+      categoria: p.categoria,
+      sectores: sectores.map((s) => s.nombre),
+      estado: p.estado,
+      prioridad: p.prioridad,
+      descripcion_libre: p.descripcion,
+      objetivo: p.objetivo,
+      fechas: { inicio: p.fecha_inicio, fin_estimada: p.fecha_fin_estimada },
+      empresa: p.empresa ? { nombre: p.empresa, industria: null } : null,
+    },
+    preguntas_ya_respondidas: preguntas
+      .filter((q) => q.estado === 'respondida' && q.respuesta)
+      .map((q) => ({ pregunta: q.pregunta, respuesta: q.respuesta as string })),
+    preguntas_pendientes: preguntas
+      .filter((q) => q.estado === 'pendiente')
+      .map((q) => q.pregunta),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  perfiles_requeridos                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Tope de personas que viajan al modelo. Ver docs/03-contrato-ia.md. */
+const TOPE_PERSONAS = 40;
+
+/**
+ * Payload de los perfiles necesarios.
+ *
+ * Manda el directorio real (acotado) para que los candidatos que devuelva sean
+ * personas que existen. Las respuestas a las preguntas de encuadre entran
+ * aquí: son la mitad del contexto que hace útil la recomendación.
+ */
+export async function payloadPerfilesRequeridos(
+  proyectoId: number,
+): Promise<PayloadPerfilesRequeridos> {
+  const p = await proyectoPorId(proyectoId);
+  if (!p) throw new ProyectoNoEncontrado(proyectoId);
+
+  const [
+    organizacion, sectores, preguntas, hitos, tareas, equipo, skills,
+    catHabilidades, catSectores, personas,
+  ] = await Promise.all([
+    contextoOrganizacion(),
+    sectoresDeProyecto(proyectoId),
+    preguntasDeProyecto(proyectoId),
+    hitosDeProyecto(proyectoId),
+    tareasDeProyecto(proyectoId),
+    equipoDeProyecto(proyectoId),
+    habilidadesRequeridas(proyectoId),
+    listaHabilidades(),
+    listaSectores(),
+    personasParaAsignar(TOPE_PERSONAS),
+  ]);
+
+  const porTipo: Record<string, number> = {};
+  for (const t of tareas) porTipo[t.tipo] = (porTipo[t.tipo] ?? 0) + 1;
+
+  return {
+    meta: meta('perfiles_requeridos'),
+    organizacion,
+    proyecto: {
+      id: p.id,
+      codigo: p.codigo,
+      nombre: p.nombre,
+      categoria: p.categoria,
+      sectores: sectores.map((s) => s.nombre),
+      descripcion_libre: p.descripcion,
+      resumen_ia: p.resumen_ia,
+      objetivo: p.objetivo,
+      fechas: {
+        inicio: p.fecha_inicio,
+        fin_estimada: p.fecha_fin_estimada,
+        dias_totales: p.fecha_inicio && p.fecha_fin_estimada
+          ? diasEntre(p.fecha_inicio, p.fecha_fin_estimada)
+          : null,
+      },
+      hitos,
+      tareas_por_tipo: porTipo,
+      equipo_actual: equipo.map(aMiembroEquipo),
+      habilidades_ya_declaradas: skills.map((s) => ({
+        nombre: s.nombre, nivel_minimo: s.nivel_minimo, criticidad: s.criticidad,
+      })),
+    },
+    preguntas_respondidas: preguntas
+      .filter((q) => q.estado === 'respondida' && q.respuesta)
+      .map((q) => ({ pregunta: q.pregunta, respuesta: q.respuesta as string })),
+    catalogo_habilidades: catHabilidades.map((h) => ({
+      slug: h.slug, nombre: h.nombre, tipo: h.tipo,
+    })),
+    catalogo_sectores: catSectores.map((s) => ({ slug: s.slug, nombre: s.nombre })),
+    personas_disponibles: personas,
+  };
 }

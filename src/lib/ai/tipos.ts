@@ -38,7 +38,9 @@ export type TipoAnalisis =
   | 'priorizacion_diaria'
   | 'perfil_cv'
   | 'planteamiento_proyecto'
-  | 'tareas_sugeridas';
+  | 'tareas_sugeridas'
+  | 'preguntas_encuadre'
+  | 'perfiles_requeridos';
 
 /* ========================================================================== */
 /*  1 · SOBRE (envelope) COMÚN                                                 */
@@ -353,18 +355,41 @@ export interface PayloadPriorizacionDiaria {
 
 export interface PayloadPerfilCv {
   meta: MetaPayload;
-  documento: {
-    persona_id: number | null;
-    nombre_archivo: string;
-    tipo: string;
-    /** Texto plano ya extraído del PDF/DOCX. Truncado a un tope de caracteres. */
+  organizacion: ContextoOrganizacion;
+  persona: {
+    id: number;
+    nombre_completo: string;
+    tipo_relacion: string;
+    rol_principal: string | null;
+    seniority: string | null;
+    anios_experiencia: number | null;
+    ubicacion: string | null;
+    empresa: string | null;
+    bio: string | null;
+  };
+  /** La materia prima: el CV pegado o la descripción libre de la persona. */
+  insumo: {
     texto: string;
     truncado: boolean;
+    /** Notas del usuario, separadas del CV para que no se confundan con él. */
+    notas: string | null;
+    origen: 'texto_pegado';
   };
-  /** Catálogo existente para que el modelo reutilice slugs en vez de inventarlos. */
+  /**
+   * Lo que YA está registrado. Viaja para que al re-ejecutar el análisis el
+   * modelo complemente en vez de repetir o contradecir sin evidencia nueva.
+   */
+  registrado: {
+    habilidades: { slug: string; nombre: string; nivel: number; validado: boolean }[];
+    sectores: { slug: string; nombre: string; nivel: number }[];
+    experiencias: { empresa: string; cargo: string }[];
+  };
+  /** Catálogos existentes para que el modelo reutilice slugs en vez de inventarlos. */
   catalogo_habilidades: { slug: string; nombre: string; tipo: string }[];
+  catalogo_sectores: { slug: string; nombre: string }[];
   /** Contexto del negocio: qué necesitamos, para que evalúe el encaje. */
-  necesidades_actuales: { habilidad: string; demanda: number }[];
+  necesidades_actuales: { habilidad: string; slug: string; demanda: number }[];
+  sectores_demandados: { slug: string; nombre: string; proyectos: number }[];
 }
 
 /**
@@ -384,6 +409,8 @@ export interface PayloadPlanteamientoProyecto {
     prioridad: Prioridad;
     /** Lo que el usuario escribió al crear el proyecto. Es la materia prima. */
     descripcion_libre: string | null;
+    /** El «de qué trata» ya aplicado, si lo hay: se mejora, no se reescribe. */
+    resumen_ia_previo: string | null;
     objetivo: string | null;
     fechas: { inicio: string | null; fin_estimada: string | null };
     equipo: MiembroEquipo[];
@@ -412,6 +439,71 @@ export interface PayloadTareasSugeridas {
   };
 }
 
+/**
+ * Payload de `preguntas_encuadre`. Se dispara en el paso 2 del asistente, con
+ * lo poco que hay: la descripción libre y los datos básicos. Las respuestas ya
+ * dadas viajan para que no se vuelva a preguntar lo mismo.
+ */
+export interface PayloadPreguntasEncuadre {
+  meta: MetaPayload;
+  organizacion: ContextoOrganizacion;
+  proyecto: {
+    id: number;
+    codigo: string;
+    nombre: string;
+    categoria: string | null;
+    sectores: string[];
+    estado: EstadoProyecto;
+    prioridad: Prioridad;
+    descripcion_libre: string | null;
+    objetivo: string | null;
+    fechas: { inicio: string | null; fin_estimada: string | null };
+    empresa: { nombre: string; industria: string | null } | null;
+  };
+  preguntas_ya_respondidas: { pregunta: string; respuesta: string }[];
+  preguntas_pendientes: string[];
+}
+
+/**
+ * Payload de `perfiles_requeridos`. Cruza lo que el proyecto pide con el
+ * directorio real, para que los candidatos que devuelva sean personas que
+ * existen y no descripciones genéricas.
+ */
+export interface PayloadPerfilesRequeridos {
+  meta: MetaPayload;
+  organizacion: ContextoOrganizacion;
+  proyecto: {
+    id: number;
+    codigo: string;
+    nombre: string;
+    categoria: string | null;
+    sectores: string[];
+    descripcion_libre: string | null;
+    resumen_ia: string | null;
+    objetivo: string | null;
+    fechas: { inicio: string | null; fin_estimada: string | null; dias_totales: number | null };
+    hitos: HitoResumen[];
+    tareas_por_tipo: Record<string, number>;
+    equipo_actual: MiembroEquipo[];
+    habilidades_ya_declaradas: { nombre: string; nivel_minimo: number; criticidad: string }[];
+  };
+  preguntas_respondidas: { pregunta: string; respuesta: string }[];
+  catalogo_habilidades: { slug: string; nombre: string; tipo: string }[];
+  catalogo_sectores: { slug: string; nombre: string }[];
+  personas_disponibles: {
+    persona_id: number;
+    nombre: string;
+    rol_principal: string | null;
+    seniority: string | null;
+    anios_experiencia: number | null;
+    tipo_relacion: string;
+    sectores: string[];
+    habilidades: { slug: string; nombre: string; nivel: number }[];
+    carga: { proyectos_activos: number; tareas_abiertas: number };
+    disponibilidad_horas_semana: number | null;
+  }[];
+}
+
 export type PayloadIa =
   | PayloadSaludProyecto
   | PayloadCuellosBotella
@@ -420,7 +512,9 @@ export type PayloadIa =
   | PayloadPriorizacionDiaria
   | PayloadPerfilCv
   | PayloadPlanteamientoProyecto
-  | PayloadTareasSugeridas;
+  | PayloadTareasSugeridas
+  | PayloadPreguntasEncuadre
+  | PayloadPerfilesRequeridos;
 
 /* ========================================================================== */
 /*  4 · RESPUESTAS ESTRUCTURADAS                                               */
@@ -550,6 +644,16 @@ export interface RespuestaPerfilCv {
     evidencia: string | null;
     confianza: number;
   }[];
+  /** Industrias donde ha trabajado de verdad. Eje distinto de las habilidades. */
+  sectores: {
+    slug_existente: string | null;
+    nombre: string;
+    nivel: number;                   // 1–5
+    anios_experiencia: number | null;
+    es_principal: boolean;
+    evidencia: string | null;
+    confianza: number;
+  }[];
   experiencias: {
     empresa: string;
     cargo: string;
@@ -630,4 +734,56 @@ export interface ResultadoAnalisis<T> {
   payload_hash: string;
   datos: T;
   uso: { tokens_entrada: number; tokens_salida: number; costo_usd: number | null; latencia_ms: number };
+}
+
+
+/** Respuesta de `preguntas_encuadre`. */
+export interface RespuestaPreguntasEncuadre {
+  lectura_inicial: string;
+  preguntas: {
+    pregunta: string;
+    motivo: string;
+    tema: string;
+    importancia: Prioridad;
+    ejemplo_respuesta: string | null;
+  }[];
+  supuestos_provisionales: string[];
+  confianza: number;
+}
+
+/** Respuesta de `perfiles_requeridos`: perfiles accionables, no prosa. */
+export interface RespuestaPerfilesRequeridos {
+  resumen_necesidad: string;
+  perfiles: {
+    rol: string;
+    proposito: string;
+    seniority: 'junior' | 'semi_senior' | 'senior' | 'lead' | 'director';
+    sector_slug: string | null;
+    cantidad: number;
+    dedicacion_pct: number | null;
+    criticidad: 'deseable' | 'importante' | 'indispensable';
+    fases: string[];
+    habilidades: {
+      slug_existente: string | null;
+      nombre: string;
+      tipo: 'tecnica' | 'herramienta' | 'dominio' | 'blanda' | 'idioma' | 'metodologia';
+      nivel_minimo: number;
+      criticidad: 'deseable' | 'importante' | 'indispensable';
+    }[];
+    candidatos: {
+      persona_id: number;
+      puntaje_ajuste: number;
+      por_que: string;
+      brechas: string[];
+      riesgo_sobrecarga: NivelTriple;
+    }[];
+  }[];
+  brechas_del_directorio: {
+    habilidad: string;
+    nivel_requerido: number;
+    situacion: string;
+    sugerencia: 'capacitar' | 'contratar' | 'subcontratar' | 'redistribuir' | 'aceptar_riesgo';
+  }[];
+  confianza: number;
+  datos_faltantes: string[];
 }

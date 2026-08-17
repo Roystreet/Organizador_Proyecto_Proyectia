@@ -178,7 +178,8 @@ export const personaDocumentos = mysqlTable('persona_documentos', {
   tipo: mysqlEnum('tipo', ['cv', 'portafolio', 'certificacion', 'notas', 'otro'])
     .notNull().default('cv'),
   nombreArchivo: varchar('nombre_archivo', { length: 255 }).notNull(),
-  rutaArchivo: varchar('ruta_archivo', { length: 500 }).notNull(),
+  /** NULL cuando el insumo es texto pegado, sin archivo detrás. */
+  rutaArchivo: varchar('ruta_archivo', { length: 500 }),
   mimeType: varchar('mime_type', { length: 100 }),
   tamanoBytes: int('tamano_bytes', { unsigned: true }),
   textoExtraido: longtext('texto_extraido'),
@@ -256,12 +257,53 @@ export const personaInsumos = mysqlTable('persona_insumos', {
 /*  3 · PROYECTOS                                                              */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Taxonomía de industrias. Aparte de `habilidades` a propósito: el sector es el
+ * CONTEXTO donde alguien trabajó, no algo que sepa hacer. Ejes distintos.
+ */
+export const sectores = mysqlTable('sectores', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(),
+  nombre: varchar('nombre', { length: 80 }).notNull(),
+  slug: varchar('slug', { length: 80 }).notNull(),
+  descripcion: varchar('descripcion', { length: 255 }),
+  colorHex: char('color_hex', { length: 7 }).notNull().default('#2E7D32'),
+  orden: smallint('orden').notNull().default(0),
+  activo: boolean('activo').notNull().default(true),
+  creadoEn: datetime('creado_en').notNull().default(ahora),
+}, (t) => ({
+  slugUq: uniqueIndex('uq_sectores_slug').on(t.slug),
+}));
+
+export const personaSectores = mysqlTable('persona_sectores', {
+  personaId: int('persona_id', { unsigned: true }).notNull()
+    .references(() => personas.id, { onDelete: 'cascade' }),
+  sectorId: int('sector_id', { unsigned: true }).notNull()
+    .references(() => sectores.id, { onDelete: 'cascade' }),
+  /** 1 = roce puntual … 5 = especialista del sector. */
+  nivel: tinyint('nivel', { unsigned: true }).notNull().default(3),
+  aniosExperiencia: decimal('anios_experiencia', { precision: 4, scale: 1 }),
+  esPrincipal: boolean('es_principal').notNull().default(false),
+  evidencia: varchar('evidencia', { length: 500 }),
+  origen: mysqlEnum('origen', ['manual', 'ia_cv']).notNull().default('manual'),
+  confianza: decimal('confianza', { precision: 3, scale: 2 }),
+  validado: boolean('validado').notNull().default(false),
+  creadoEn: datetime('creado_en').notNull().default(ahora),
+  actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.personaId, t.sectorId] }),
+  sectorIx: index('ix_persona_sectores_sector').on(t.sectorId),
+}));
+
 export const proyectos = mysqlTable('proyectos', {
   id: int('id', { unsigned: true }).autoincrement().primaryKey(),
   codigo: varchar('codigo', { length: 20 }).notNull(),
   nombre: varchar('nombre', { length: 200 }).notNull(),
   slug: varchar('slug', { length: 200 }).notNull(),
+  /** Lo que escribió el usuario. Materia prima: nada la sobrescribe. */
   descripcion: text('descripcion'),
+  /** «De qué trata» redactado por la IA. Vive aparte para no pisar `descripcion`. */
+  resumenIa: text('resumen_ia'),
+  resumenIaActualizadoEn: datetime('resumen_ia_actualizado_en'),
   /** Qué se considera éxito. Es el ancla del análisis de IA. */
   objetivo: text('objetivo'),
   categoriaId: int('categoria_id', { unsigned: true })
@@ -285,6 +327,8 @@ export const proyectos = mysqlTable('proyectos', {
   /** Última actividad real. Alimenta la detección de proyectos estancados. */
   ultimoMovimientoEn: datetime('ultimo_movimiento_en'),
   archivado: boolean('archivado').notNull().default(false),
+  /** Paso del asistente de creación. NULL = proyecto publicado. */
+  wizardPaso: tinyint('wizard_paso', { unsigned: true }),
   creadoEn: datetime('creado_en').notNull().default(ahora),
   actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
 }, (t) => ({
@@ -343,12 +387,51 @@ export const proyectoHabilidadesRequeridas = mysqlTable('proyecto_habilidades_re
 /*  4 · HITOS Y SPRINTS                                                        */
 /* -------------------------------------------------------------------------- */
 
+/** Sector del proyecto: la otra mitad del match persona ↔ proyecto. */
+export const proyectoSectores = mysqlTable('proyecto_sectores', {
+  proyectoId: int('proyecto_id', { unsigned: true }).notNull()
+    .references(() => proyectos.id, { onDelete: 'cascade' }),
+  sectorId: int('sector_id', { unsigned: true }).notNull()
+    .references(() => sectores.id, { onDelete: 'cascade' }),
+  esPrincipal: boolean('es_principal').notNull().default(false),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.proyectoId, t.sectorId] }),
+  sectorIx: index('ix_proyecto_sectores_sector').on(t.sectorId),
+}));
+
+/**
+ * Preguntas de encuadre generadas por la IA, con su respuesta.
+ *
+ * Tabla propia y no `comentarios`: una respuesta se edita como tal, y el
+ * UNIQUE por (proyecto, pregunta) hace que regenerar preguntas refresque el
+ * enunciado sin borrar lo ya respondido.
+ */
+export const proyectoPreguntas = mysqlTable('proyecto_preguntas', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(),
+  proyectoId: int('proyecto_id', { unsigned: true }).notNull()
+    .references(() => proyectos.id, { onDelete: 'cascade' }),
+  analisisId: int('analisis_id', { unsigned: true }),
+  pregunta: varchar('pregunta', { length: 500 }).notNull(),
+  motivo: varchar('motivo', { length: 500 }),
+  tema: varchar('tema', { length: 80 }),
+  importancia: mysqlEnum('importancia', PRIORIDADES).notNull().default('media'),
+  respuesta: text('respuesta'),
+  estado: mysqlEnum('estado', ['pendiente', 'respondida', 'omitida']).notNull().default('pendiente'),
+  orden: smallint('orden').notNull().default(0),
+  creadoEn: datetime('creado_en').notNull().default(ahora),
+  actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
+}, (t) => ({
+  proyectoEstadoIx: index('ix_ppr_proyecto_estado').on(t.proyectoId, t.estado),
+}));
+
 export const hitos = mysqlTable('hitos', {
   id: int('id', { unsigned: true }).autoincrement().primaryKey(),
   proyectoId: int('proyecto_id', { unsigned: true }).notNull()
     .references(() => proyectos.id, { onDelete: 'cascade' }),
   nombre: varchar('nombre', { length: 200 }).notNull(),
   descripcion: text('descripcion'),
+  /** Arranque de la fase. NULL = se deriva de la fase anterior al pintar. */
+  fechaInicio: date('fecha_inicio'),
   fechaObjetivo: date('fecha_objetivo'),
   fechaCompletado: date('fecha_completado'),
   estado: mysqlEnum('estado', ['pendiente', 'en_progreso', 'completado', 'atrasado', 'cancelado'])
@@ -559,7 +642,8 @@ export const analisisIa = mysqlTable('analisis_ia', {
   tipoAnalisis: mysqlEnum('tipo_analisis',
     ['salud_proyecto', 'cuellos_botella', 'match_persona_tarea',
      'patrones_globales', 'priorizacion_diaria', 'perfil_cv',
-     'planteamiento_proyecto', 'tareas_sugeridas']).notNull(),
+     'planteamiento_proyecto', 'tareas_sugeridas',
+     'preguntas_encuadre', 'perfiles_requeridos']).notNull(),
   alcance: mysqlEnum('alcance', ['proyecto', 'global', 'persona', 'tarea']).notNull(),
   proyectoId: int('proyecto_id', { unsigned: true })
     .references(() => proyectos.id, { onDelete: 'cascade' }),

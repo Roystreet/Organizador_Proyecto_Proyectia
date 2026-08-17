@@ -16,7 +16,10 @@ la base, aplica el esquema y carga los datos si hace falta. Detalles en `README.
 | Usuarios | Un solo usuario (tú). Sin login. Las personas del directorio son registros, no cuentas |
 | Motor de IA | OpenAI, con Structured Outputs (`strict: true`) |
 | Categorías | Catálogo administrable + etiquetas libres |
-| Perfiles | Se sube un CV o datos de la persona y la IA extrae habilidades, experiencia y fortalezas |
+| Sectores | Tabla propia (`sectores`), asociada a personas y proyectos. Eje distinto de `habilidades`: el sector es dónde se trabajó, la habilidad es qué se sabe hacer |
+| Alta de proyecto | Asistente de 4 pasos que persiste un borrador desde el paso 1, porque el motor de IA necesita un id real para construir el payload y cachear |
+| Cambios de esquema | Migraciones idempotentes en `scripts/migraciones.mjs`, detectadas contra `information_schema`. `db:reset` deja de ser necesario |
+| Perfiles | Se **pega** el CV o una descripción y la IA extrae habilidades, sectores, experiencia y fortalezas. Sin subida de archivos: evita depender de librerías de extracción de PDF |
 | Módulos incluidos | Clientes/empresas, comentarios y bitácora, hitos, sprints y adjuntos |
 | Fuera de alcance por ahora | Registro de horas y costos |
 | Análisis sin API key | `IA_MODO=simulado` usa un analista por reglas equivalente |
@@ -123,7 +126,7 @@ Dos secciones del payload cierran el ciclo de aprendizaje: `patrones_conocidos` 
 
 1. **Cálculo de la salud (`verde`/`amarillo`/`rojo`).** El campo tiene `salud_origen` para distinguir si la fijaste tú, si la calculó una fórmula o si la puso la IA. Falta definir la fórmula base — mi propuesta: que la calcule SQL con reglas simples (desviación de progreso, bloqueos, asuntos críticos, días sin movimiento) y que la IA solo la ajuste cuando ve algo que la fórmula no captura.
 2. **Dónde se guardan los archivos.** Hoy `persona_documentos.ruta_archivo` y `adjuntos.ruta_archivo` asumen disco local (`UPLOADS_DIR`). Sirve para un entorno local; si algún día esto se despliega, hay que migrar a almacenamiento de objetos.
-3. **Extracción de texto de los CV.** Hay que elegir librería: `pdf-parse` para PDF y `mammoth` para DOCX es la combinación más simple en Node.
+3. ~~Extracción de texto de los CV.~~ **Resuelto:** se decidió texto pegado en vez de archivos, así que no hace falta librería de extracción.
 4. **Frecuencia de los análisis automáticos.** `priorizacion_diaria` cada mañana y `patrones_globales` semanal es un punto de partida razonable, pero depende de cuánto se mueva tu portafolio.
 
 ## 4 · La aplicación

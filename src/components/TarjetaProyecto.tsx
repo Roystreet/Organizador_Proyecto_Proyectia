@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import {
-  Card, CardActionArea, CardContent, Box, Typography, LinearProgress, Stack, Tooltip,
+  Card, CardActionArea, CardContent, Box, Chip, Typography, LinearProgress, Stack, Tooltip,
 } from '@mui/material';
 import BlockOutlined from '@mui/icons-material/BlockOutlined';
 import EventBusyOutlined from '@mui/icons-material/EventBusyOutlined';
@@ -32,7 +32,13 @@ function Señal({ icono, valor, titulo, color }: {
   );
 }
 
-export default function TarjetaProyecto({ p, salud }: { p: FilaResumenProyecto; salud: Salud }) {
+export default function TarjetaProyecto({
+  p, salud,
+}: {
+  p: FilaResumenProyecto & { wizard_paso?: number | null };
+  salud: Salud;
+}) {
+  const esBorrador = p.wizard_paso != null;
   const avance = p.tareas_total > 0
     ? Math.round((p.tareas_completadas / p.tareas_total) * 100)
     : p.progreso_pct;
@@ -43,7 +49,12 @@ export default function TarjetaProyecto({ p, salud }: { p: FilaResumenProyecto; 
 
   return (
     <Card sx={{ height: '100%' }}>
-      <CardActionArea component={Link} href={`/proyectos/${p.id}`} sx={{ height: '100%' }}>
+      {/* Un borrador lleva al asistente, no al detalle: si no, se queda
+          atrapado en una página vacía sin forma de retomarlo. */}
+      <CardActionArea component={Link} sx={{ height: '100%' }}
+                      href={esBorrador
+                        ? `/proyectos/nuevo?id=${p.id}&paso=${p.wizard_paso}`
+                        : `/proyectos/${p.id}`}>
         <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 1.25, height: '100%' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <PuntoSalud salud={salud} />
@@ -51,6 +62,11 @@ export default function TarjetaProyecto({ p, salud }: { p: FilaResumenProyecto; 
               {p.codigo}
             </Typography>
             <Box sx={{ flexGrow: 1 }} />
+            {esBorrador && (
+              <Chip size="small" color="warning" variant="outlined"
+                    label={`Borrador · paso ${p.wizard_paso}/4`}
+                    sx={{ height: 20, fontSize: '0.65rem' }} />
+            )}
             <ChipSemantico grupo="prioridad" valor={p.prioridad} />
           </Box>
 

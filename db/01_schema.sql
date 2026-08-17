@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS `persona_documentos` (
   `persona_id`      INT UNSIGNED NOT NULL,
   `tipo`            ENUM('cv','portafolio','certificacion','notas','otro') NOT NULL DEFAULT 'cv',
   `nombre_archivo`  VARCHAR(255) NOT NULL,
-  `ruta_archivo`    VARCHAR(500) NOT NULL,
+  `ruta_archivo`    VARCHAR(500) NULL COMMENT 'NULL cuando el insumo es texto pegado, sin archivo',
   `mime_type`       VARCHAR(100) NULL,
   `tamano_bytes`    INT UNSIGNED NULL,
   `texto_extraido`  LONGTEXT NULL,
@@ -244,6 +244,45 @@ CREATE TABLE IF NOT EXISTS `persona_insumos` (
     REFERENCES `personas` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB;
 
+-- Taxonomía de industrias. Deliberadamente aparte de `habilidades`: el sector
+-- es el CONTEXTO donde alguien trabajó (farmacia, logística, minería), no algo
+-- que sepa hacer. Cruzarlos por separado es lo que permite decir "sabe validar
+-- procesos Y viene de farmacia" en vez de mezclar los dos ejes.
+CREATE TABLE IF NOT EXISTS `sectores` (
+  `id`          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `nombre`      VARCHAR(80)  NOT NULL,
+  `slug`        VARCHAR(80)  NOT NULL,
+  `descripcion` VARCHAR(255) NULL,
+  `color_hex`   CHAR(7)      NOT NULL DEFAULT '#2E7D32',
+  `orden`       SMALLINT     NOT NULL DEFAULT 0,
+  `activo`      TINYINT(1)   NOT NULL DEFAULT 1,
+  `creado_en`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_sectores_slug` (`slug`)
+) ENGINE=InnoDB;
+
+-- Sectores que cubre una persona, con su nivel de experiencia real en cada uno.
+CREATE TABLE IF NOT EXISTS `persona_sectores` (
+  `persona_id`        INT UNSIGNED NOT NULL,
+  `sector_id`         INT UNSIGNED NOT NULL,
+  `nivel`             TINYINT UNSIGNED NOT NULL DEFAULT 3 COMMENT '1=roce puntual … 5=especialista',
+  `anios_experiencia` DECIMAL(4,1) NULL,
+  `es_principal`      TINYINT(1) NOT NULL DEFAULT 0,
+  `evidencia`         VARCHAR(500) NULL,
+  `origen`            ENUM('manual','ia_cv') NOT NULL DEFAULT 'manual',
+  `confianza`         DECIMAL(3,2) NULL,
+  `validado`          TINYINT(1) NOT NULL DEFAULT 0,
+  `creado_en`         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `actualizado_en`    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`persona_id`,`sector_id`),
+  KEY `ix_persona_sectores_sector` (`sector_id`),
+  CONSTRAINT `fk_pse_persona` FOREIGN KEY (`persona_id`)
+    REFERENCES `personas` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_pse_sector` FOREIGN KEY (`sector_id`)
+    REFERENCES `sectores` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `ck_pse_nivel` CHECK (`nivel` BETWEEN 1 AND 5)
+) ENGINE=InnoDB;
+
 -- ============================================================================
 --  BLOQUE 3 · PROYECTOS
 -- ============================================================================
@@ -253,7 +292,9 @@ CREATE TABLE IF NOT EXISTS `proyectos` (
   `codigo`           VARCHAR(20)  NOT NULL COMMENT 'Clave corta, ej. ORG-01',
   `nombre`           VARCHAR(200) NOT NULL,
   `slug`             VARCHAR(200) NOT NULL,
-  `descripcion`      TEXT NULL,
+  `descripcion`      TEXT NULL COMMENT 'Lo que escribió el usuario. Materia prima: nada la sobrescribe',
+  `resumen_ia`       TEXT NULL COMMENT 'De qué trata, redactado por la IA. NUNCA pisa descripcion',
+  `resumen_ia_actualizado_en` DATETIME NULL,
   `objetivo`         TEXT NULL COMMENT 'Qué se considera éxito. Clave para el análisis IA',
   `categoria_id`     INT UNSIGNED NULL,
   `empresa_id`       INT UNSIGNED NULL,
@@ -275,6 +316,8 @@ CREATE TABLE IF NOT EXISTS `proyectos` (
   `ultimo_movimiento_en` DATETIME NULL
                      COMMENT 'Última actividad real: tarea, asunto o comentario. Detecta estancamiento',
   `archivado`        TINYINT(1) NOT NULL DEFAULT 0,
+  `wizard_paso`      TINYINT UNSIGNED NULL
+                     COMMENT 'Paso del asistente de creación. NULL = proyecto publicado',
   `creado_en`        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `actualizado_en`   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -346,6 +389,47 @@ CREATE TABLE IF NOT EXISTS `proyecto_habilidades_requeridas` (
     REFERENCES `habilidades` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB;
 
+-- Sector del proyecto. Es la otra mitad del match: sin esto solo se puede
+-- cruzar experticia técnica, y un ERP para una farmacéutica no lo saca
+-- adelante cualquiera que sepa de ERP.
+CREATE TABLE IF NOT EXISTS `proyecto_sectores` (
+  `proyecto_id`  INT UNSIGNED NOT NULL,
+  `sector_id`    INT UNSIGNED NOT NULL,
+  `es_principal` TINYINT(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`proyecto_id`,`sector_id`),
+  KEY `ix_proyecto_sectores_sector` (`sector_id`),
+  CONSTRAINT `fk_prs_proyecto` FOREIGN KEY (`proyecto_id`)
+    REFERENCES `proyectos` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_prs_sector` FOREIGN KEY (`sector_id`)
+    REFERENCES `sectores` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+
+-- Preguntas de encuadre que la IA genera al crear el proyecto, con su respuesta.
+-- Viven aquí y no en `comentarios` porque una respuesta se edita como tal, y
+-- porque realimentan el payload del planteamiento: responder una invalida su
+-- caché y mejora el plan siguiente.
+CREATE TABLE IF NOT EXISTS `proyecto_preguntas` (
+  `id`             INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `proyecto_id`    INT UNSIGNED NOT NULL,
+  `analisis_id`    INT UNSIGNED NULL COMMENT 'Análisis que la generó; NULL si la escribió el usuario',
+  `pregunta`       VARCHAR(500) NOT NULL,
+  `motivo`         VARCHAR(500) NULL COMMENT 'Qué decisión del plan cambia según la respuesta',
+  `tema`           VARCHAR(80)  NULL,
+  `importancia`    ENUM('baja','media','alta','critica') NOT NULL DEFAULT 'media',
+  `respuesta`      TEXT NULL,
+  `estado`         ENUM('pendiente','respondida','omitida') NOT NULL DEFAULT 'pendiente',
+  `orden`          SMALLINT NOT NULL DEFAULT 0,
+  `creado_en`      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `actualizado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_proyecto_pregunta` (`proyecto_id`,`pregunta`(180)),
+  KEY `ix_ppr_proyecto_estado` (`proyecto_id`,`estado`),
+  CONSTRAINT `fk_ppr_proyecto` FOREIGN KEY (`proyecto_id`)
+    REFERENCES `proyectos` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_ppr_analisis` FOREIGN KEY (`analisis_id`)
+    REFERENCES `analisis_ia` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB;
+
 -- ============================================================================
 --  BLOQUE 4 · HITOS Y SPRINTS
 -- ============================================================================
@@ -355,6 +439,7 @@ CREATE TABLE IF NOT EXISTS `hitos` (
   `proyecto_id`    INT UNSIGNED NOT NULL,
   `nombre`         VARCHAR(200) NOT NULL,
   `descripcion`    TEXT NULL,
+  `fecha_inicio`   DATE NULL COMMENT 'Arranque de la fase. NULL = se deriva de la fase anterior',
   `fecha_objetivo` DATE NULL,
   `fecha_completado` DATE NULL,
   `estado`         ENUM('pendiente','en_progreso','completado','atrasado','cancelado')
@@ -365,6 +450,7 @@ CREATE TABLE IF NOT EXISTS `hitos` (
   PRIMARY KEY (`id`),
   KEY `ix_hitos_proyecto` (`proyecto_id`),
   KEY `ix_hitos_fecha_objetivo` (`fecha_objetivo`),
+  KEY `ix_hitos_fecha_inicio` (`fecha_inicio`),
   CONSTRAINT `fk_hitos_proyecto` FOREIGN KEY (`proyecto_id`)
     REFERENCES `proyectos` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB;
@@ -601,7 +687,8 @@ CREATE TABLE IF NOT EXISTS `analisis_ia` (
   `id`              INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `tipo_analisis`   ENUM('salud_proyecto','cuellos_botella','match_persona_tarea',
                          'patrones_globales','priorizacion_diaria','perfil_cv',
-                         'planteamiento_proyecto','tareas_sugeridas')
+                         'planteamiento_proyecto','tareas_sugeridas',
+                         'preguntas_encuadre','perfiles_requeridos')
                     NOT NULL,
   `alcance`         ENUM('proyecto','global','persona','tarea') NOT NULL,
   `proyecto_id`     INT UNSIGNED NULL,

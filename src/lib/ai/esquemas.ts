@@ -238,6 +238,20 @@ export const ESQUEMA_PERFIL_CV = obj({
     confianza: num('0.0 a 1.0'),
   })),
 
+  sectores: arr(obj({
+    slug_existente: strNull(
+      'Slug exacto de payload.catalogo_sectores si el sector coincide con uno del ' +
+      'catálogo. null solo si ninguno aplica de verdad.',
+    ),
+    nombre: str(),
+    nivel: ent('1 = roce puntual, 5 = especialista del sector. Sé conservador.'),
+    anios_experiencia: numNull(),
+    es_principal: bool(),
+    evidencia: strNull('Frase textual del insumo que lo respalda.'),
+    confianza: num('0.0 a 1.0'),
+  }), 'Industrias donde ha trabajado de verdad. Máximo 5. Haber tenido un cliente ' +
+      'de un sector no convierte a nadie en especialista de ese sector.'),
+
   experiencias: arr(obj({
     empresa: str(),
     cargo: str(),
@@ -341,6 +355,77 @@ export const ESQUEMA_TAREAS_SUGERIDAS = obj({
 });
 
 /* -------------------------------------------------------------------------- */
+/*  8 · preguntas_encuadre                                                     */
+/* -------------------------------------------------------------------------- */
+
+const TEMA_PREGUNTA = [
+  'alcance', 'objetivo', 'usuarios', 'restricciones', 'plazos', 'presupuesto',
+  'equipo', 'riesgos', 'calidad', 'normativa', 'datos', 'integraciones',
+] as const;
+
+export const ESQUEMA_PREGUNTAS_ENCUADRE = obj({
+  lectura_inicial: str(
+    'Qué se entiende hoy del proyecto y qué falta para poder planificarlo. 2–3 frases.',
+  ),
+  preguntas: arr(obj({
+    pregunta: str('Una sola pregunta, concreta y respondible en 1–3 frases.'),
+    motivo: str('Qué decisión del plan cambia según la respuesta.'),
+    tema: enumStr(TEMA_PREGUNTA),
+    importancia: enumStr(PRIORIDAD),
+    ejemplo_respuesta: strNull('Ejemplo breve de una respuesta útil, o null.'),
+  }), 'Entre 4 y 8, ordenadas de más a menos determinante. Nada que ya esté respondido.'),
+  supuestos_provisionales: arr(str(), 'Lo que se asumirá si la pregunta queda sin responder.'),
+  confianza: num('0.0 a 1.0'),
+});
+
+/* -------------------------------------------------------------------------- */
+/*  9 · perfiles_requeridos                                                    */
+/* -------------------------------------------------------------------------- */
+
+const SENIORITY = ['junior', 'semi_senior', 'senior', 'lead', 'director'] as const;
+const CRITICIDAD = ['deseable', 'importante', 'indispensable'] as const;
+const TIPO_HABILIDAD = ['tecnica', 'herramienta', 'dominio', 'blanda', 'idioma', 'metodologia'] as const;
+
+export const ESQUEMA_PERFILES_REQUERIDOS = obj({
+  resumen_necesidad: str('Qué tipo de equipo pide este proyecto. 2–3 frases.'),
+  perfiles: arr(obj({
+    rol: str('Nombre del rol tal como se publicaría. Máx. 80 caracteres.'),
+    proposito: str('Qué resuelve esta persona en el proyecto. 1–2 frases.'),
+    seniority: enumStr(SENIORITY),
+    sector_slug: strNull(
+      'Slug de payload.catalogo_sectores si el rol exige experiencia sectorial; ' +
+      'null si el sector es indiferente.',
+    ),
+    cantidad: ent('Cuántas personas con este perfil hacen falta.'),
+    dedicacion_pct: intNull('% de una jornada completa, o null.'),
+    criticidad: enumStr(CRITICIDAD),
+    fases: arr(str(), 'Nombres de hitos del payload en los que participa. Vacío si es transversal.'),
+    habilidades: arr(obj({
+      slug_existente: strNull('Slug exacto de payload.catalogo_habilidades, o null si hay que crearla.'),
+      nombre: str(),
+      tipo: enumStr(TIPO_HABILIDAD),
+      nivel_minimo: ent('1 = básico … 5 = experto.'),
+      criticidad: enumStr(CRITICIDAD),
+    })),
+    candidatos: arr(obj({
+      persona_id: ent('ID REAL de payload.personas_disponibles. Nunca lo inventes.'),
+      puntaje_ajuste: ent('0 a 100.'),
+      por_que: str('Qué habilidad o sector concreto del payload lo respalda.'),
+      brechas: arr(str()),
+      riesgo_sobrecarga: enumStr(TRIPLE),
+    }), 'Solo personas del payload. Vacío si ninguna encaja: no rellenes.'),
+  }), 'Entre 1 y 6 perfiles, ordenados por criticidad.'),
+  brechas_del_directorio: arr(obj({
+    habilidad: str(),
+    nivel_requerido: ent('1 a 5.'),
+    situacion: str('Quién se acerca hoy y qué le falta.'),
+    sugerencia: enumStr(['capacitar', 'contratar', 'subcontratar', 'redistribuir', 'aceptar_riesgo']),
+  })),
+  confianza: num('0.0 a 1.0'),
+  datos_faltantes: arr(str()),
+});
+
+/* -------------------------------------------------------------------------- */
 /*  Registro y helper de response_format                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -353,6 +438,8 @@ export const ESQUEMAS = {
   perfil_cv:              { nombre: 'perfil_cv',                 esquema: ESQUEMA_PERFIL_CV },
   planteamiento_proyecto: { nombre: 'planteamiento_proyecto',    esquema: ESQUEMA_PLANTEAMIENTO },
   tareas_sugeridas:       { nombre: 'tareas_sugeridas',          esquema: ESQUEMA_TAREAS_SUGERIDAS },
+  preguntas_encuadre:     { nombre: 'preguntas_encuadre',        esquema: ESQUEMA_PREGUNTAS_ENCUADRE },
+  perfiles_requeridos:    { nombre: 'perfiles_requeridos',       esquema: ESQUEMA_PERFILES_REQUERIDOS },
 } as const;
 
 export type ClaveEsquema = keyof typeof ESQUEMAS;

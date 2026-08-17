@@ -10,11 +10,14 @@ import ChipSemantico from '@/components/ChipSemantico';
 import PuntoSalud from '@/components/PuntoSalud';
 import PanelIa from '@/components/PanelIa';
 import PanelPlanteamiento from '@/components/PanelPlanteamiento';
-import RoadmapProyecto from '@/components/RoadmapProyecto';
+import PanelPreguntas from '@/components/PanelPreguntas';
+import RoadmapProyecto from '@/components/roadmap/RoadmapProyecto';
+import SeccionColapsable from '@/components/SeccionColapsable';
 import Kpi from '@/components/Kpi';
 import {
   proyectoPorId, tareasDeProyecto, asuntosDeProyecto, equipoDeProyecto,
   habilidadesRequeridas, ultimoAnalisis, ultimoAnalisisPorTipo, roadmapDeProyecto,
+  preguntasDeProyecto,
 } from '@/lib/consultas';
 import { idsRecomendaciones, normalizarJson } from '@/lib/ai/cliente';
 import { calcularSalud, fmtDias, fmtFecha } from '@/lib/formato';
@@ -36,15 +39,17 @@ export default async function DetalleProyecto({
   const p = await proyectoPorId(proyectoId);
   if (!p) notFound();
 
-  const [tareas, asuntos, equipo, skills, analisis, planteamiento, roadmap] = await Promise.all([
-    tareasDeProyecto(proyectoId),
-    asuntosDeProyecto(proyectoId),
-    equipoDeProyecto(proyectoId),
-    habilidadesRequeridas(proyectoId),
-    ultimoAnalisis(proyectoId),
-    ultimoAnalisisPorTipo(proyectoId, 'planteamiento_proyecto'),
-    roadmapDeProyecto(proyectoId),
-  ]);
+  const [tareas, asuntos, equipo, skills, analisis, planteamiento, roadmap, preguntas] =
+    await Promise.all([
+      tareasDeProyecto(proyectoId),
+      asuntosDeProyecto(proyectoId),
+      equipoDeProyecto(proyectoId),
+      habilidadesRequeridas(proyectoId),
+      ultimoAnalisis(proyectoId),
+      ultimoAnalisisPorTipo(proyectoId, 'planteamiento_proyecto'),
+      roadmapDeProyecto(proyectoId),
+      preguntasDeProyecto(proyectoId),
+    ]);
 
   const salud = p.salud === 'sin_datos' ? calcularSalud(p) : p.salud;
   const avance = p.tareas_total > 0
@@ -103,6 +108,48 @@ export default async function DetalleProyecto({
         )}
       </Box>
 
+      {/* De qué trata: el resumen de la IA, con la descripción original detrás */}
+      {(p.resumen_ia || p.descripcion) && (
+        <Card>
+          <CardContent>
+            {p.resumen_ia ? (
+              <>
+                <Typography variant="overline" color="text.secondary">De qué trata</Typography>
+                <Typography variant="body1" sx={{ maxWidth: 900, mt: 0.5 }}>
+                  {p.resumen_ia}
+                </Typography>
+                <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 1 }}>
+                  Redactado por la IA{p.resumen_ia_actualizado_en
+                    ? ` · ${fmtFecha(p.resumen_ia_actualizado_en)}`
+                    : ''}
+                </Typography>
+                {p.descripcion && (
+                  <Box sx={{ mt: 2 }}>
+                    <SeccionColapsable titulo="Descripción original" inicial={false}>
+                      <Typography variant="body2" color="text.secondary"
+                                  sx={{ whiteSpace: 'pre-line', maxWidth: 900, mt: 0.5 }}>
+                        {p.descripcion}
+                      </Typography>
+                    </SeccionColapsable>
+                  </Box>
+                )}
+              </>
+            ) : (
+              <>
+                <Typography variant="overline" color="text.secondary">De qué trata</Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-line', maxWidth: 900, mt: 0.5 }}>
+                  {p.descripcion}
+                </Typography>
+                <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 1 }}>
+                  Todavía sin resumen. Genera el planteamiento más abajo para tener una
+                  versión que se entienda de un vistazo.
+                </Typography>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* KPIs del proyecto */}
       <Box sx={{
         display: 'grid', gap: 2,
@@ -122,6 +169,10 @@ export default async function DetalleProyecto({
              tono={p.dias_restantes !== null && p.dias_restantes < 15 ? 'alerta' : 'normal'} />
       </Box>
 
+      {preguntas.length > 0 && (
+        <PanelPreguntas proyectoId={proyectoId} preguntas={preguntas} />
+      )}
+
       <PanelPlanteamiento
         proyectoId={proyectoId}
         autoGenerar={consulta.planteamiento === 'auto'}
@@ -130,19 +181,18 @@ export default async function DetalleProyecto({
 
       <PanelIa proyectoId={proyectoId} inicial={inicial} />
 
-      {/* Roadmap */}
-      <Card>
-        <CardContent>
-          <Typography variant="h4" sx={{ mb: 1.5 }}>Roadmap</Typography>
-          <RoadmapProyecto
-            hitos={roadmap.hitos}
-            sprints={roadmap.sprints}
-            tareas={roadmap.tareas}
-            fechaInicio={p.fecha_inicio}
-            fechaFinEstimada={p.fecha_fin_estimada}
-          />
-        </CardContent>
-      </Card>
+      {/* Roadmap. La Card y la cabecera viven dentro del componente: el
+          selector de escala y «Añadir fase» son parte de la misma unidad. */}
+      <RoadmapProyecto
+        proyectoId={proyectoId}
+        codigoProyecto={p.codigo}
+        nombreProyecto={p.nombre}
+        hitos={roadmap.hitos}
+        sprints={roadmap.sprints}
+        tareas={roadmap.tareas}
+        fechaInicio={p.fecha_inicio}
+        fechaFinEstimada={p.fecha_fin_estimada}
+      />
 
       {/* Tareas */}
       <Card>

@@ -4,14 +4,14 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress,
-  Collapse, Divider, FormControlLabel, LinearProgress, Stack, Tooltip, Typography,
+  Divider, FormControlLabel, LinearProgress, Stack, Tooltip, Typography,
 } from '@mui/material';
 import MapOutlined from '@mui/icons-material/MapOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
 import PlaylistAddOutlined from '@mui/icons-material/PlaylistAddOutlined';
-import ExpandMoreOutlined from '@mui/icons-material/ExpandMoreOutlined';
 import TipsAndUpdatesOutlined from '@mui/icons-material/TipsAndUpdatesOutlined';
 import ChipSemantico from './ChipSemantico';
+import Seccion from './SeccionColapsable';
 import {
   aceptarPropuestaPlanteamiento, aceptarTareasSugeridas,
 } from '@/lib/acciones/propuestasIa';
@@ -55,7 +55,8 @@ export default function PanelPlanteamiento({
   const [hitosMarcados, setHitosMarcados] = React.useState<Set<number>>(new Set());
   const [tareasMarcadas, setTareasMarcadas] = React.useState<Set<number>>(new Set());
   const [aplicarObjetivo, setAplicarObjetivo] = React.useState(true);
-  const [aplicarResumen, setAplicarResumen] = React.useState(false);
+  // Marcado por defecto: antes venía apagado porque pisaba `descripcion`.
+  const [aplicarResumen, setAplicarResumen] = React.useState(true);
   const [insertando, setInsertando] = React.useState(false);
   const [insertado, setInsertado] = React.useState<string | null>(null);
 
@@ -266,7 +267,10 @@ export default function PanelPlanteamiento({
                                    onChange={(e) => setAplicarResumen(e.target.checked)} />}
                 label={
                   <Typography variant="body2">
-                    <strong>Reemplazar la descripción</strong> por el resumen «de qué trata»
+                    <strong>Guardar el resumen «de qué trata»</strong>
+                    <Typography component="span" variant="caption" color="text.secondary">
+                      {' '}· se guarda aparte, tu descripción no se toca
+                    </Typography>
                   </Typography>
                 }
               />
@@ -425,24 +429,5 @@ export default function PanelPlanteamiento({
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function Seccion({ titulo, children }: { titulo: string; children: React.ReactNode }) {
-  const [abierto, setAbierto] = React.useState(true);
-  return (
-    <Box>
-      <Box
-        onClick={() => setAbierto((v) => !v)}
-        sx={{ display: 'flex', alignItems: 'center', gap: 0.5, cursor: 'pointer', userSelect: 'none' }}
-      >
-        <Typography variant="overline" color="text.secondary">{titulo}</Typography>
-        <ExpandMoreOutlined
-          fontSize="small"
-          sx={{ color: 'text.disabled', transform: abierto ? 'rotate(180deg)' : 'none', transition: '.2s' }}
-        />
-      </Box>
-      <Collapse in={abierto}>{children}</Collapse>
-    </Box>
   );
 }

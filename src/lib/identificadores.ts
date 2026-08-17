@@ -20,7 +20,7 @@ export function generarSlug(texto: string): string {
     .slice(0, 140) || 'sin-nombre';
 }
 
-const TABLAS_CON_SLUG = ['proyectos', 'empresas'] as const;
+const TABLAS_CON_SLUG = ['proyectos', 'empresas', 'habilidades', 'sectores'] as const;
 type TablaConSlug = (typeof TABLAS_CON_SLUG)[number];
 
 /** Devuelve `base`, o `base-2`, `base-3`… hasta encontrar uno libre. */

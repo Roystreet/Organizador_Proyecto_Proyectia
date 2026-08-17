@@ -1,7 +1,10 @@
 'use server';
 
 /**
- * Mutaciones de proyectos. Patrón de toda la capa de acciones:
+ * Edición de proyectos. El alta vive en `acciones/wizard.ts`: crear pasa por el
+ * asistente, que persiste un borrador para poder correr los análisis de IA.
+ *
+ * Patrón de toda la capa de acciones:
  * Zod (enums importados del schema) → identificadores únicos → transacción →
  * bitácora → revalidatePath → redirect.
  */
@@ -10,9 +13,8 @@ import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { pool, fila } from '@/db';
 import { ESTADOS_PROYECTO, PRIORIDADES } from '@/db/schema';
-import { generarSlug, asegurarSlugUnico, generarCodigoProyecto } from '@/lib/identificadores';
 import { registrarEnBitacora } from '@/lib/bitacora';
-import { texto, entero, erroresDeZod, esDuplicado } from './util';
+import { texto, entero, erroresDeZod } from './util';
 import type { EstadoFormulario } from './tipos';
 
 const FECHA = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida (AAAA-MM-DD)');
@@ -29,6 +31,7 @@ const zProyecto = z.object({
   prioridad: z.enum(PRIORIDADES),
   fechaInicio: FECHA.nullable(),
   fechaFinEstimada: FECHA.nullable(),
+  sectorIds: z.array(z.number().int().positive()).max(5, 'Máximo 5 sectores'),
 }).refine(
   (p) => !p.fechaInicio || !p.fechaFinEstimada || p.fechaFinEstimada >= p.fechaInicio,
   { path: ['fechaFinEstimada'], error: 'La fecha de fin no puede ser anterior al inicio' },
@@ -46,59 +49,9 @@ function leerFormulario(datos: FormData) {
     prioridad: texto(datos, 'prioridad') ?? 'media',
     fechaInicio: texto(datos, 'fechaInicio'),
     fechaFinEstimada: texto(datos, 'fechaFinEstimada'),
+    sectorIds: datos.getAll('sectorIds')
+      .map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0),
   });
-}
-
-export async function crearProyecto(
-  _prev: EstadoFormulario,
-  datos: FormData,
-): Promise<EstadoFormulario> {
-  const parseo = leerFormulario(datos);
-  if (!parseo.success) return erroresDeZod(parseo.error);
-  const p = parseo.data;
-
-  let proyectoId = 0;
-
-  // Dos intentos: si el código o el slug chocan (carrera), se regeneran.
-  for (let intento = 1; intento <= 2; intento++) {
-    const codigo = await generarCodigoProyecto(p.nombre);
-    const slug = await asegurarSlugUnico(generarSlug(p.nombre), 'proyectos');
-
-    const conexion = await pool.getConnection();
-    try {
-      await conexion.beginTransaction();
-      const [res] = await conexion.query(
-        `INSERT INTO proyectos
-           (codigo, nombre, slug, descripcion, objetivo, categoria_id, empresa_id,
-            responsable_id, estado, prioridad, fecha_inicio, fecha_fin_estimada,
-            ultimo_movimiento_en)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NOW())`,
-        [
-          codigo, p.nombre, slug, p.descripcion, p.objetivo, p.categoriaId, p.empresaId,
-          p.responsableId, p.estado, p.prioridad, p.fechaInicio, p.fechaFinEstimada,
-        ],
-      );
-      proyectoId = (res as { insertId: number }).insertId;
-      await registrarEnBitacora(conexion, {
-        entidadTipo: 'proyecto', entidadId: proyectoId, proyectoId,
-        accion: 'crear', valorNuevo: `${codigo} · ${p.nombre}`,
-      });
-      await conexion.commit();
-      break;
-    } catch (e) {
-      await conexion.rollback();
-      if (esDuplicado(e) && intento === 1) continue;
-      if (esDuplicado(e)) return { ok: false, mensaje: 'El código o el slug ya existen. Intenta de nuevo.' };
-      throw e;
-    } finally {
-      conexion.release();
-    }
-  }
-
-  revalidatePath('/proyectos');
-  revalidatePath('/');
-  // `?planteamiento=auto` dispara el análisis de planteamiento al llegar al detalle.
-  redirect(`/proyectos/${proyectoId}?planteamiento=auto`);
 }
 
 export async function actualizarProyecto(
@@ -129,6 +82,16 @@ export async function actualizarProyecto(
         p.responsableId, p.estado, p.prioridad, p.fechaInicio, p.fechaFinEstimada, id,
       ],
     );
+    // El primero marcado cuenta como principal.
+    await conexion.query('DELETE FROM proyecto_sectores WHERE proyecto_id = ?', [id]);
+    for (const [i, sectorId] of p.sectorIds.entries()) {
+      await conexion.query(
+        `INSERT INTO proyecto_sectores (proyecto_id, sector_id, es_principal)
+         VALUES (?,?,?) ON DUPLICATE KEY UPDATE es_principal = VALUES(es_principal)`,
+        [id, sectorId, i === 0 ? 1 : 0],
+      );
+    }
+
     if (actual.estado !== p.estado) {
       await registrarEnBitacora(conexion, {
         entidadTipo: 'proyecto', entidadId: id, proyectoId: id,

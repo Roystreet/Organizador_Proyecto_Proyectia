@@ -147,16 +147,28 @@ export interface FilaRecomendacion {
 /* -------------------------------------------------------------------------- */
 
 export const resumenProyectos = () =>
-  filas<FilaResumenProyecto>(`
-    SELECT * FROM v_resumen_proyectos
-    ORDER BY FIELD(prioridad,'critica','alta','media','baja'),
-             FIELD(estado,'en_progreso','en_revision','planificacion','en_pausa','idea','completado','cancelado'),
-             codigo
+  // El JOIN trae `wizard_paso` sin tener que recrear la vista.
+  filas<FilaResumenProyecto & { wizard_paso: number | null }>(`
+    SELECT v.*, p.wizard_paso
+      FROM v_resumen_proyectos v
+      JOIN proyectos p ON p.id = v.id
+    ORDER BY p.wizard_paso IS NULL,
+             FIELD(v.prioridad,'critica','alta','media','baja'),
+             FIELD(v.estado,'en_progreso','en_revision','planificacion','en_pausa','idea','completado','cancelado'),
+             v.codigo
   `);
 
 export const proyectoPorId = (id: number) =>
-  fila<FilaResumenProyecto & { descripcion: string | null; objetivo: string | null; notas: string | null }>(
-    `SELECT v.*, p.descripcion, p.objetivo, p.notas
+  fila<FilaResumenProyecto & {
+    descripcion: string | null; resumen_ia: string | null;
+    // DATETIME llega como Date: el `dateStrings` del pool solo cubre DATE.
+    resumen_ia_actualizado_en: Date | null;
+    objetivo: string | null; notas: string | null;
+  }>(
+    // Las columnas nuevas se leen de `proyectos`, no de la vista: así
+    // v_resumen_proyectos no hay que recrearla.
+    `SELECT v.*, p.descripcion, p.resumen_ia, p.resumen_ia_actualizado_en,
+            p.objetivo, p.notas
        FROM v_resumen_proyectos v
        JOIN proyectos p ON p.id = v.id
       WHERE v.id = ?`,
@@ -343,6 +355,7 @@ export interface FiltrosPersonas {
   tipoRelacion?: string;
   empresaId?: number;
   habilidadId?: number;
+  sectorId?: number;
 }
 
 const TIPOS_RELACION_VALIDOS = new Set(
@@ -371,6 +384,11 @@ export const listaPersonas = (filtros: FiltrosPersonas = {}) => {
     condiciones.push(`EXISTS (SELECT 1 FROM persona_habilidades ph
       WHERE ph.persona_id = pe.id AND ph.habilidad_id = ?)`);
     params.push(filtros.habilidadId);
+  }
+  if (filtros.sectorId) {
+    condiciones.push(`EXISTS (SELECT 1 FROM persona_sectores ps
+      WHERE ps.persona_id = pe.id AND ps.sector_id = ?)`);
+    params.push(filtros.sectorId);
   }
 
   return filas<FilaPersona>(`
@@ -557,8 +575,10 @@ export const opcionesPersonas = () =>
   );
 
 export const listaHabilidades = () =>
-  filas<{ id: number; nombre: string; tipo: string }>(
-    `SELECT id, nombre, tipo FROM habilidades ORDER BY nombre`,
+  filas<{ id: number; nombre: string; slug: string; tipo: string }>(
+    // El slug lo necesita el perfilado por IA para reutilizar el catálogo en
+    // vez de crear variantes de habilidades que ya existen.
+    `SELECT id, nombre, slug, tipo FROM habilidades ORDER BY nombre`,
   );
 
 /* -------------------------------------------------------------------------- */
@@ -569,6 +589,7 @@ export interface FilaHitoRoadmap {
   id: number;
   nombre: string;
   descripcion: string | null;
+  fecha_inicio: string | null;
   fecha_objetivo: string | null;
   fecha_completado: string | null;
   estado: string;
@@ -588,6 +609,8 @@ export interface FilaSprint {
 export interface FilaTareaRoadmap {
   id: number;
   titulo: string;
+  orden: number;
+  estimacion_horas: number | null;
   estado: EstadoTarea;
   prioridad: Prioridad;
   hito_id: number | null;
@@ -601,15 +624,15 @@ export interface FilaTareaRoadmap {
 export const roadmapDeProyecto = async (id: number) => {
   const [hitos, sprints, tareas] = await Promise.all([
     filas<FilaHitoRoadmap>(
-      `SELECT h.id, h.nombre, h.descripcion, h.fecha_objetivo, h.fecha_completado,
-              h.estado, h.orden,
+      `SELECT h.id, h.nombre, h.descripcion, h.fecha_inicio, h.fecha_objetivo,
+              h.fecha_completado, h.estado, h.orden,
               (SELECT COUNT(*) FROM tareas t WHERE t.hito_id = h.id
                  AND t.estado <> 'cancelada')                            AS tareas_total,
               (SELECT COUNT(*) FROM tareas t WHERE t.hito_id = h.id
                  AND t.estado = 'completada')                            AS tareas_completadas
          FROM hitos h
         WHERE h.proyecto_id = ? AND h.estado <> 'cancelado'
-        ORDER BY h.orden, h.fecha_objetivo`,
+        ORDER BY h.orden, h.fecha_inicio, h.fecha_objetivo`,
       [id],
     ),
     filas<FilaSprint>(
@@ -619,8 +642,8 @@ export const roadmapDeProyecto = async (id: number) => {
       [id],
     ),
     filas<FilaTareaRoadmap>(
-      `SELECT t.id, t.titulo, t.estado, t.prioridad, t.hito_id, t.sprint_id,
-              t.fecha_inicio, t.fecha_vencimiento, t.progreso_pct,
+      `SELECT t.id, t.titulo, t.orden, t.estimacion_horas, t.estado, t.prioridad,
+              t.hito_id, t.sprint_id, t.fecha_inicio, t.fecha_vencimiento, t.progreso_pct,
               CONCAT_WS(' ', pe.nombre, pe.apellido) AS responsable
          FROM tareas t
          LEFT JOIN personas pe ON pe.id = t.responsable_id
@@ -676,9 +699,239 @@ export const ultimoAnalisisPorTipo = (proyectoId: number, tipo: string) =>
 export const ultimoAnalisis = (proyectoId: number) =>
   ultimoAnalisisPorTipo(proyectoId, 'salud_proyecto');
 
+/** Igual que el anterior, para los análisis con alcance de persona. */
+export const ultimoAnalisisDePersona = (personaId: number, tipo: string) =>
+  fila<{
+    id: number; tipo_analisis: string; resumen: string | null;
+    respuesta_json: unknown; modelo: string; creado_en: string;
+  }>(
+    `SELECT id, tipo_analisis, resumen, respuesta_json, modelo, creado_en
+       FROM analisis_ia
+      WHERE persona_id = ? AND tipo_analisis = ? AND estado = 'ok'
+      ORDER BY creado_en DESC LIMIT 1`,
+    [personaId, tipo],
+  );
+
 export const patronesActivos = () =>
   filas<{ clave: string; nombre: string; descripcion: string | null; tipo: string; frecuencia: number; confianza: number | null; recomendacion: string | null; ultima_deteccion: string }>(`
     SELECT clave, nombre, descripcion, tipo, frecuencia, confianza, recomendacion, ultima_deteccion
       FROM patrones_detectados WHERE estado = 'activo'
      ORDER BY frecuencia DESC, confianza DESC LIMIT 10
   `);
+
+/* -------------------------------------------------------------------------- */
+/*  Sectores                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export const listaSectores = () =>
+  filas<{ id: number; nombre: string; slug: string }>(
+    `SELECT id, nombre, slug FROM sectores WHERE activo = 1 ORDER BY orden, nombre`,
+  );
+
+export const sectoresDePersona = (personaId: number) =>
+  filas<{
+    id: number; nombre: string; slug: string; nivel: number;
+    anios_experiencia: number | null; es_principal: number;
+    evidencia: string | null; origen: string; validado: number;
+  }>(
+    `SELECT s.id, s.nombre, s.slug, ps.nivel, ps.anios_experiencia, ps.es_principal,
+            ps.evidencia, ps.origen, ps.validado
+       FROM persona_sectores ps
+       JOIN sectores s ON s.id = ps.sector_id
+      WHERE ps.persona_id = ?
+      ORDER BY ps.es_principal DESC, ps.nivel DESC, s.nombre`,
+    [personaId],
+  );
+
+export const sectoresDeProyecto = (proyectoId: number) =>
+  filas<{ id: number; nombre: string; slug: string; es_principal: number }>(
+    `SELECT s.id, s.nombre, s.slug, prs.es_principal
+       FROM proyecto_sectores prs
+       JOIN sectores s ON s.id = prs.sector_id
+      WHERE prs.proyecto_id = ?
+      ORDER BY prs.es_principal DESC, s.orden`,
+    [proyectoId],
+  );
+
+/** En qué sectores se concentra el portafolio activo. Contexto para el perfilado. */
+export const sectoresDemandados = () =>
+  filas<{ slug: string; nombre: string; proyectos: number }>(
+    `SELECT s.slug, s.nombre, COUNT(DISTINCT p.id) AS proyectos
+       FROM sectores s
+       JOIN proyecto_sectores prs ON prs.sector_id = s.id
+       JOIN proyectos p ON p.id = prs.proyecto_id
+      WHERE p.archivado = 0 AND p.estado NOT IN ('completado','cancelado')
+      GROUP BY s.id, s.slug, s.nombre
+      ORDER BY proyectos DESC`,
+  );
+
+/** Habilidades que piden los proyectos vivos, ordenadas por cuántos las exigen. */
+export const habilidadesDemandadas = () =>
+  filas<{ habilidad: string; slug: string; demanda: number }>(
+    `SELECT h.nombre AS habilidad, h.slug, COUNT(DISTINCT p.id) AS demanda
+       FROM habilidades h
+       JOIN proyecto_habilidades_requeridas phr ON phr.habilidad_id = h.id
+       JOIN proyectos p ON p.id = phr.proyecto_id
+      WHERE p.archivado = 0 AND p.estado NOT IN ('completado','cancelado')
+      GROUP BY h.id, h.nombre, h.slug
+      ORDER BY demanda DESC, h.nombre
+      LIMIT 25`,
+  );
+
+/** Datos crudos de la persona para el perfilado (no filtra por activo). */
+export const personaParaPerfil = (id: number) =>
+  fila<{
+    id: number; nombre_completo: string; tipo_relacion: string;
+    rol_principal: string | null; seniority: string | null;
+    anios_experiencia: number | null; ubicacion: string | null;
+    empresa: string | null; bio: string | null;
+  }>(
+    `SELECT pe.id, CONCAT_WS(' ', pe.nombre, pe.apellido) AS nombre_completo,
+            pe.tipo_relacion, pe.rol_principal, pe.seniority, pe.anios_experiencia,
+            pe.ubicacion, em.nombre AS empresa, pe.bio
+       FROM personas pe
+       LEFT JOIN empresas em ON em.id = pe.empresa_id
+      WHERE pe.id = ?`,
+    [id],
+  );
+
+/** Habilidades ya registradas, con slug: base del bloque `registrado` del payload. */
+export const habilidadesRegistradas = (personaId: number) =>
+  filas<{ slug: string; nombre: string; nivel: number; validado: number }>(
+    `SELECT h.slug, h.nombre, ph.nivel, ph.validado
+       FROM persona_habilidades ph
+       JOIN habilidades h ON h.id = ph.habilidad_id
+      WHERE ph.persona_id = ?`,
+    [personaId],
+  );
+
+/** El último texto que se usó para perfilar a esta persona. */
+export const insumoPerfilDePersona = (personaId: number) =>
+  fila<{ id: number; texto_extraido: string | null; creado_en: Date }>(
+    `SELECT id, texto_extraido, creado_en
+       FROM persona_documentos
+      WHERE persona_id = ? AND tipo = 'notas' AND estado_extraccion = 'procesado'
+      ORDER BY id DESC LIMIT 1`,
+    [personaId],
+  );
+
+/** Fila cruda de una fase para el diálogo de edición. */
+export const hitoParaEditar = (id: number) =>
+  fila<{
+    id: number; proyecto_id: number; nombre: string; descripcion: string | null;
+    fecha_inicio: string | null; fecha_objetivo: string | null;
+    estado: string; orden: number; tareas: number;
+  }>(
+    `SELECT h.id, h.proyecto_id, h.nombre, h.descripcion, h.fecha_inicio,
+            h.fecha_objetivo, h.estado, h.orden,
+            (SELECT COUNT(*) FROM tareas t WHERE t.hito_id = h.id) AS tareas
+       FROM hitos h WHERE h.id = ?`,
+    [id],
+  );
+
+/* -------------------------------------------------------------------------- */
+/*  Asistente de creación                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface FilaPregunta {
+  id: number;
+  pregunta: string;
+  motivo: string | null;
+  tema: string | null;
+  importancia: Prioridad;
+  respuesta: string | null;
+  estado: 'pendiente' | 'respondida' | 'omitida';
+  orden: number;
+}
+
+export const preguntasDeProyecto = (proyectoId: number) =>
+  filas<FilaPregunta>(
+    `SELECT id, pregunta, motivo, tema, importancia, respuesta, estado, orden
+       FROM proyecto_preguntas
+      WHERE proyecto_id = ?
+      ORDER BY FIELD(estado,'pendiente','respondida','omitida'),
+               FIELD(importancia,'critica','alta','media','baja'), orden, id`,
+    [proyectoId],
+  );
+
+/**
+ * Directorio acotado para el cruce de perfiles.
+ *
+ * Internos y freelance primero: son quienes de verdad pueden tomar trabajo.
+ * Solo viajan habilidades de nivel ≥ 2, porque un «lo toqué una vez» no
+ * sostiene una asignación y sí infla el payload.
+ */
+export const personasParaAsignar = async (tope: number) => {
+  const base = await filas<{
+    persona_id: number; nombre: string; rol_principal: string | null;
+    seniority: string | null; anios_experiencia: number | null; tipo_relacion: string;
+    disponibilidad_horas_semana: number | null;
+    proyectos_activos: number; tareas_abiertas: number;
+  }>(
+    `SELECT pe.id AS persona_id,
+            CONCAT_WS(' ', pe.nombre, pe.apellido) AS nombre,
+            pe.rol_principal, pe.seniority, pe.anios_experiencia, pe.tipo_relacion,
+            pe.disponibilidad_horas_semana,
+            (SELECT COUNT(DISTINCT pp.proyecto_id) FROM proyecto_personas pp
+              JOIN proyectos pr ON pr.id = pp.proyecto_id
+             WHERE pp.persona_id = pe.id AND pp.activo = 1 AND pr.archivado = 0
+               AND pr.estado NOT IN ('completado','cancelado'))          AS proyectos_activos,
+            (SELECT COUNT(*) FROM tareas t
+             WHERE t.responsable_id = pe.id
+               AND t.estado NOT IN ('completada','cancelada'))           AS tareas_abiertas
+       FROM personas pe
+      WHERE pe.activo = 1
+      ORDER BY FIELD(pe.tipo_relacion,'interno','freelance','proveedor','stakeholder','cliente','candidato'),
+               pe.nombre
+      LIMIT ?`,
+    [tope],
+  );
+
+  if (base.length === 0) return [];
+  const ids = base.map((b) => b.persona_id);
+
+  const [habilidades, sectores] = await Promise.all([
+    filas<{ persona_id: number; slug: string; nombre: string; nivel: number }>(
+      `SELECT ph.persona_id, h.slug, h.nombre, ph.nivel
+         FROM persona_habilidades ph JOIN habilidades h ON h.id = ph.habilidad_id
+        WHERE ph.persona_id IN (?) AND ph.nivel >= 2`,
+      [ids],
+    ),
+    filas<{ persona_id: number; nombre: string }>(
+      `SELECT ps.persona_id, s.nombre
+         FROM persona_sectores ps JOIN sectores s ON s.id = ps.sector_id
+        WHERE ps.persona_id IN (?)`,
+      [ids],
+    ),
+  ]);
+
+  return base.map((b) => ({
+    persona_id: b.persona_id,
+    nombre: b.nombre,
+    rol_principal: b.rol_principal,
+    seniority: b.seniority,
+    anios_experiencia: b.anios_experiencia,
+    tipo_relacion: b.tipo_relacion,
+    sectores: sectores.filter((s) => s.persona_id === b.persona_id).map((s) => s.nombre),
+    habilidades: habilidades
+      .filter((h) => h.persona_id === b.persona_id)
+      .map(({ slug, nombre, nivel }) => ({ slug, nombre, nivel })),
+    carga: { proyectos_activos: b.proyectos_activos, tareas_abiertas: b.tareas_abiertas },
+    disponibilidad_horas_semana: b.disponibilidad_horas_semana,
+  }));
+};
+
+/** Borrador del asistente: en qué paso quedó. */
+export const borradorProyecto = (proyectoId: number) =>
+  fila<{
+    id: number; nombre: string; descripcion: string | null; objetivo: string | null;
+    categoria_id: number | null; empresa_id: number | null; responsable_id: number | null;
+    prioridad: string; fecha_inicio: string | null; fecha_fin_estimada: string | null;
+    wizard_paso: number | null; estado: string; codigo: string;
+  }>(
+    `SELECT id, codigo, nombre, descripcion, objetivo, categoria_id, empresa_id,
+            responsable_id, prioridad, fecha_inicio, fecha_fin_estimada,
+            wizard_paso, estado
+       FROM proyectos WHERE id = ? AND archivado = 0`,
+    [proyectoId],
+  );

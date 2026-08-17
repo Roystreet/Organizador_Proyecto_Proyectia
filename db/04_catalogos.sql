@@ -11,6 +11,39 @@
 
 SET NAMES utf8mb4;
 
+-- ------------------------------------------------------------------- SECTORES
+-- La organización no trabaja solo en tecnología. El sector es el contexto de
+-- industria (dónde se trabajó), distinto de la habilidad (qué se sabe hacer):
+-- cruzarlos por separado es lo que permite distinguir "sabe validar procesos"
+-- de "viene de farmacia".
+INSERT INTO `sectores` (`nombre`,`slug`,`orden`) VALUES
+  ('Tecnología',             'tecnologia',        10),
+  ('Química',                'quimica',           20),
+  ('Farmacia',               'farmacia',          30),
+  ('Logística',              'logistica',         40),
+  ('Salud',                  'salud',             50),
+  ('Manufactura',            'manufactura',       60),
+  ('Energía',                'energia',           70),
+  ('Legal',                  'legal',             80),
+  ('Finanzas',               'finanzas',          90),
+  ('Educación',              'educacion',        100),
+  ('Construcción',           'construccion',     110),
+  ('Agroindustria',          'agroindustria',    120),
+  ('Alimentos y Bebidas',    'alimentos',        130),
+  ('Retail y Comercio',      'retail',           140),
+  ('Minería',                'mineria',          150),
+  ('Telecomunicaciones',     'telecomunicaciones',160),
+  ('Transporte',             'transporte',       170),
+  ('Medio Ambiente',         'medio-ambiente',   180),
+  ('Sector Público',         'sector-publico',   190),
+  ('Marketing y Publicidad', 'marketing',        200),
+  ('Turismo y Hotelería',    'turismo',          210),
+  ('Seguros',                'seguros',          220),
+  ('Inmobiliario',           'inmobiliario',     230),
+  ('Automotriz',             'automotriz',       240),
+  ('Textil',                 'textil',           250)
+ON DUPLICATE KEY UPDATE `nombre` = VALUES(`nombre`);
+
 -- ---------------------------------------------------------------- HABILIDADES
 -- El seed original (02_seed.sql) cubre bien software y poco más. La
 -- organización trabaja en varios sectores: química, farmacia, logística,

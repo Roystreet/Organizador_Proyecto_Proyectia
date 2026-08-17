@@ -59,8 +59,8 @@ Un sistema donde la información operativa (proyectos, tareas, asuntos, personas
 
 ### Funcionando
 
-- Base de datos completa: **30 tablas, 3 vistas, 2 triggers, 45 claves foráneas, 318 columnas**.
-- Catálogos poblados: 10 categorías de proyecto, 10 categorías de asunto, 35 habilidades, 12 roles.
+- Base de datos completa: **35 tablas, 3 vistas, 2 triggers**, con migraciones idempotentes que se aplican solas al arrancar (`scripts/migraciones.mjs`).
+- Catálogos poblados: 10 categorías de proyecto, 10 categorías de asunto, **75 habilidades multisector**, **25 sectores**, 12 roles.
 - Aplicación Next.js con tres pantallas leyendo datos reales.
 - Motor de IA de punta a punta: construcción del payload desde SQL, llamada al modelo, validación, persistencia y visualización.
 - Modo sin API key (`IA_MODO=simulado`) con un analista por reglas equivalente.
@@ -70,7 +70,17 @@ Un sistema donde la información operativa (proyectos, tareas, asuntos, personas
 - Directorio CRM: tabla de personas con búsqueda y filtros, detalle `/personas/[id]`, y gestión de empresas con sus contactos y proyectos.
 - Flujo crear-proyecto-con-IA: al crear un proyecto con su descripción, el análisis `planteamiento_proyecto` propone planteamiento, hitos y tareas; el usuario marca qué insertar (revisar-y-aceptar). `tareas_sugeridas` propone tareas según el estado actual.
 - Selección de modelo por tipo de análisis (`src/lib/ai/modelos.ts`): los análisis de solo texto usan `OPENAI_MODEL_TEXTO`.
-- Roadmap visual por proyecto: hitos, sprints y tareas sobre una grilla semanal, sin librerías de charts.
+- Roadmap visual por proyecto: cada fase como barra con su extensión real, eje
+  conmutable entre mes y trimestre, línea de HOY, alta y edición de fases, y
+  planificación determinista de las tareas sin fecha. Sin librerías de charts.
+- Perfil de persona con IA a partir de texto pegado (CV o descripción libre):
+  habilidades con nivel, **sectores que cubre**, experiencia, fortalezas,
+  aportes y qué conviene preguntarle. Flujo revisar-y-aceptar.
+- Asistente de creación de proyecto en cuatro pasos: datos base → preguntas de
+  encuadre generadas por IA → planteamiento y roadmap → perfiles necesarios con
+  candidatos reales del directorio.
+- «De qué trata» redactado por la IA en su propia columna (`proyectos.resumen_ia`),
+  visible en el detalle y sin pisar nunca la descripción del usuario.
 
 ### Todavía no
 
@@ -440,7 +450,7 @@ Todos los payloads comparten el mismo sobre:
 
 Con esos topes, un `salud_proyecto` queda entre 4.000 y 9.000 tokens de entrada.
 
-### 7.3 Los seis análisis
+### 7.3 Los diez análisis
 
 | Tipo | Alcance | Entra | Sale | Estado |
 |---|---|---|---|---|
@@ -449,7 +459,7 @@ Con esos topes, un `salud_proyecto` queda entre 4.000 y 9.000 tokens de entrada.
 | `match_persona_tarea` | 1 tarea o proyecto | Requerimiento + candidatos con experticia, carga e historial | Ranking con puntaje de ajuste, brechas y riesgo de sobrecarga | Contrato listo |
 | `patrones_globales` | Portafolio | Agregados cruzados + patrones conocidos | Patrones con clave estable, evidencia y confianza | Contrato listo |
 | `priorizacion_diaria` | Portafolio | Capacidad del día + candidatos | Máximo 7 acciones, foco del día, qué NO hacer hoy | Contrato listo |
-| `perfil_cv` | 1 documento | Texto del CV + catálogo de habilidades + necesidades | Perfil, habilidades con nivel, experiencias, fortalezas, aportes y preguntas sugeridas | Contrato listo |
+| `perfil_cv` | 1 persona | Texto pegado + catálogos de habilidades y sectores + lo ya registrado | Perfil, habilidades con nivel, **sectores**, experiencias, fortalezas, aportes y preguntas sugeridas | **Conectado** |
 
 ### 7.4 Salida estructurada
 
@@ -764,12 +774,13 @@ Cinco defectos reales que aparecieron al ejecutar, no al leer. Se documentan por
 
 1. **Faltan formularios de tareas y asuntos.** Proyectos, personas y empresas ya se crean y editan desde la interfaz; tareas y asuntos todavía entran por SQL (o vía las propuestas de la IA).
 2. **Los archivos se guardan en disco local** (`UPLOADS_DIR`). Sirve para un entorno local; un despliegue requeriría almacenamiento de objetos.
-3. **Extracción de texto de CV pendiente.** Falta elegir librería; `pdf-parse` para PDF y `mammoth` para DOCX es la combinación más simple en Node.
+3. **El perfilado entra por texto pegado, no por archivo.** Se decidió así para no depender de librerías de extracción de PDF/DOCX. Subir un archivo sigue sin estar soportado.
 4. **Cuatro de los ocho análisis no están conectados a la interfaz** (`cuellos_botella`, `match_persona_tarea`, `patrones_globales`, `priorizacion_diaria`). Tienen contrato, esquema y prompt escritos.
 5. **`metricas_snapshot` no se llena solo.** Necesita un proceso diario que tome la instantánea.
 6. **Sin pruebas automatizadas.** La verificación fue manual contra una base real.
 7. **Un solo usuario.** Sin autenticación ni permisos, por decisión de alcance.
-8. **Cambios de ENUM no se aplican solos.** `scripts/preparar.mjs` aplica el esquema únicamente si las tablas no existen; tras cambiar un ENUM (p. ej. `tipo_analisis`) hay que correr `pnpm db:reset` o el `ALTER TABLE` equivalente.
+8. **Cambiar un prompt no invalida la caché.** La clave es `payload_hash + tipo + entidad`; `prompt_version` solo se registra para auditoría. Para reanalizar tras tocar un prompt hay que usar «Volver a generar», que envía `forzar: true`.
+9. **`pnpm dev:rapido` se salta las migraciones.** Tras traer cambios de esquema hay que correr `pnpm setup` una vez.
 
 ---
 

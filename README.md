@@ -83,7 +83,13 @@ Si `IA_MODO=real` pero no hay clave, cae al modo simulado en vez de fallar.
 | Comando | Qué hace |
 |---|---|
 | `pnpm dev` | Prepara la base si hace falta y arranca en desarrollo |
-| `pnpm dev:rapido` | Arranca sin verificar la base (cuando ya sabes que está lista) |
+| `pnpm dev:rapido` | Arranca sin verificar la base **ni aplicar migraciones** |
+
+> **Tras traer cambios de esquema, corre `pnpm run setup` una vez.**
+> `scripts/migraciones.mjs` aplica los cambios pendientes de forma idempotente
+> (detecta contra `information_schema` lo que ya está), así que se puede correr
+> las veces que haga falta sin romper nada y sin borrar la base.
+> Ojo: `pnpm setup` sin `run` invoca el comando propio de pnpm, no este script.
 | `pnpm setup` | Solo la preparación, sin arrancar |
 | `pnpm db:up` | Levanta MySQL con Docker Compose |
 | `pnpm db:down` | Detiene el contenedor |

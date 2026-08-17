@@ -3,10 +3,11 @@
 import * as React from 'react';
 import { useActionState } from 'react';
 import {
-  Alert, Box, Button, Card, CardContent, CircularProgress, MenuItem, TextField,
+  Alert, Box, Button, Card, CardContent, Chip, CircularProgress, MenuItem, TextField,
+  Typography,
 } from '@mui/material';
 import SaveOutlined from '@mui/icons-material/SaveOutlined';
-import { crearProyecto, actualizarProyecto } from '@/lib/acciones/proyectos';
+import { actualizarProyecto } from '@/lib/acciones/proyectos';
 import { ESTADO_INICIAL } from '@/lib/acciones/tipos';
 import { ETIQUETAS } from '@/theme/theme';
 
@@ -14,6 +15,7 @@ export interface CatalogosProyecto {
   categorias: { id: number; nombre: string }[];
   empresas: { id: number; nombre: string }[];
   personas: { id: number; nombre_completo: string }[];
+  sectores: { id: number; nombre: string }[];
 }
 
 export interface ValoresProyecto {
@@ -36,14 +38,25 @@ export interface ValoresProyecto {
  */
 export default function FormularioProyecto({
   catalogos,
+  sectoresMarcados = [],
   proyecto,
 }: {
   catalogos: CatalogosProyecto;
-  proyecto?: ValoresProyecto;
+  /** Ids de sectores del proyecto; el primero cuenta como principal. */
+  sectoresMarcados?: number[];
+  proyecto: ValoresProyecto;
 }) {
-  const accion = proyecto ? actualizarProyecto.bind(null, proyecto.id) : crearProyecto;
+  const accion = actualizarProyecto.bind(null, proyecto.id);
   const [estado, enviar, enviando] = useActionState(accion, ESTADO_INICIAL);
   const error = (campo: string) => estado.errores?.[campo];
+  const [marcados, setMarcados] = React.useState<Set<number>>(new Set(sectoresMarcados));
+
+  const alternarSector = (id: number) =>
+    setMarcados((s) => {
+      const c = new Set(s);
+      if (c.has(id)) c.delete(id); else c.add(id);
+      return c;
+    });
 
   return (
     <Card>
@@ -124,6 +137,27 @@ export default function FormularioProyecto({
             error={Boolean(error('fechaFinEstimada'))} helperText={error('fechaFinEstimada')}
             slotProps={{ inputLabel: { shrink: true } }}
           />
+
+          <Box sx={{ gridColumn: '1 / -1' }}>
+            <Typography variant="overline" color="text.secondary">Sector</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.75 }}>
+              En qué industria se enmarca. Cruzarlo con el sector de cada persona es lo
+              que permite proponer quién encaja de verdad.
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+              {catalogos.sectores.map((s) => (
+                <Chip
+                  key={s.id} label={s.nombre} size="small"
+                  onClick={() => alternarSector(s.id)}
+                  color={marcados.has(s.id) ? 'primary' : 'default'}
+                  variant={marcados.has(s.id) ? 'filled' : 'outlined'}
+                />
+              ))}
+            </Box>
+            {[...marcados].map((id) => (
+              <input key={id} type="hidden" name="sectorIds" value={id} />
+            ))}
+          </Box>
 
           {estado.mensaje && !estado.ok && (
             <Alert severity="error" sx={{ gridColumn: '1 / -1' }}>{estado.mensaje}</Alert>

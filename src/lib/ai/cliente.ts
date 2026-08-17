@@ -4,6 +4,7 @@ import type { PoolConnection } from 'mysql2/promise';
 import { pool, filas, fila } from '@/db';
 import {
   payloadSaludProyecto, payloadPlanteamientoProyecto, payloadTareasSugeridas,
+  payloadPerfilCv, payloadPreguntasEncuadre, payloadPerfilesRequeridos,
 } from './construirPayload';
 import { promptSistema, mensajeUsuario, PROMPT_VERSION } from './prompts';
 import { formatoRespuesta, type ClaveEsquema } from './esquemas';
@@ -11,14 +12,19 @@ import {
   zRespuestaSaludProyecto, sanearReferencias, type RespuestaSaludValidada,
   zRespuestaPlanteamiento, type RespuestaPlanteamientoValidada,
   zRespuestaTareasSugeridas, sanearTareasSugeridas, type RespuestaTareasSugeridasValidada,
+  zRespuestaPerfilCv, sanearPerfilCv, type RespuestaPerfilCvValidada,
+  zRespuestaPreguntasEncuadre, type RespuestaPreguntasEncuadreValidada,
+  zRespuestaPerfilesRequeridos, sanearPerfilesRequeridos,
+  type RespuestaPerfilesRequeridosValidada,
 } from './validacion';
 import {
   simularSaludProyecto, simularPlanteamientoProyecto, simularTareasSugeridas,
+  simularPerfilCv, simularPreguntasEncuadre, simularPerfilesRequeridos,
 } from './simulador';
 import { modeloPara } from './modelos';
 import type {
   PayloadIa, PayloadSaludProyecto, PayloadPlanteamientoProyecto, PayloadTareasSugeridas,
-  TipoAnalisis,
+  PayloadPerfilCv, PayloadPreguntasEncuadre, PayloadPerfilesRequeridos, TipoAnalisis,
 } from './tipos';
 
 /** Sobre común de cualquier análisis ejecutado por el motor. */
@@ -45,7 +51,24 @@ function estable(v: unknown): string {
   return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${estable(o[k])}`).join(',')}}`;
 }
 
-export { ProyectoNoEncontrado } from './errores';
+export { ProyectoNoEncontrado, PersonaNoEncontrada } from './errores';
+
+/**
+ * Columnas de `analisis_ia` donde puede vivir el id analizado.
+ *
+ * Es una unión cerrada porque el nombre se interpola en el SQL: nunca proviene
+ * de entrada de usuario, igual que el nombre de tabla en `asegurarSlugUnico`.
+ */
+const COLUMNAS_ENTIDAD = ['proyecto_id', 'persona_id'] as const;
+type ColumnaEntidad = (typeof COLUMNAS_ENTIDAD)[number];
+
+/** Guarda en tiempo de ejecución además del tipo, por si llega desde JSON. */
+function columnaDe(def: { columnaEntidad: ColumnaEntidad }): ColumnaEntidad {
+  if (!COLUMNAS_ENTIDAD.includes(def.columnaEntidad)) {
+    throw new Error(`columnaEntidad inválida: ${String(def.columnaEntidad)}`);
+  }
+  return def.columnaEntidad;
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Motor genérico                                                             */
@@ -59,10 +82,16 @@ export { ProyectoNoEncontrado } from './errores';
 interface DefinicionAnalisis<P extends PayloadIa, R> {
   tipo: TipoAnalisis;
   alcance: 'proyecto' | 'global' | 'persona' | 'tarea';
+  /**
+   * Columna de `analisis_ia` donde vive el id analizado. Cierra a la vez el
+   * WHERE de la caché y el INSERT: con la columna equivocada, el análisis se
+   * guarda huérfano y la caché nunca acierta (`NULL = NULL` es UNKNOWN).
+   */
+  columnaEntidad: ColumnaEntidad;
   claveEsquema: ClaveEsquema;
   /** 0.2 para análisis sobre métricas; más alto para redacción. */
   temperatura: number;
-  construirPayload: (proyectoId: number) => Promise<P>;
+  construirPayload: (entidadId: number) => Promise<P>;
   /**
    * Qué parte del payload define el hash de caché. Por defecto, el payload
    * completo. Salud lo necesita para excluir sus propias recomendaciones
@@ -79,30 +108,32 @@ interface DefinicionAnalisis<P extends PayloadIa, R> {
   puntajeDe?: (r: R) => number | null;
   /** Escrituras adicionales dentro de la MISMA transacción del INSERT. */
   guardarExtra?: (
-    conexion: PoolConnection, analisisId: number, proyectoId: number, datos: R,
+    conexion: PoolConnection, analisisId: number, entidadId: number, datos: R,
   ) => Promise<void>;
 }
 
 export async function ejecutarAnalisis<P extends PayloadIa, R>(
   def: DefinicionAnalisis<P, R>,
-  proyectoId: number,
+  entidadId: number,
   opciones: { forzar?: boolean } = {},
 ): Promise<ResultadoIa<R>> {
-  const payload = await def.construirPayload(proyectoId);
+  const payload = await def.construirPayload(entidadId);
   const hash = createHash('sha256')
     .update(estable(def.paraHash ? def.paraHash(payload) : payload))
     .digest('hex');
   const horasCache = Number(process.env.IA_CACHE_HORAS ?? 6);
 
   /* 1 · Caché: si nada cambió en el proyecto, no hay nada nuevo que analizar. */
+  const col = columnaDe(def);
+
   if (!opciones.forzar) {
     const previo = await fila<{ id: number; respuesta_json: unknown; modelo: string }>(
       `SELECT id, respuesta_json, modelo FROM analisis_ia
-        WHERE proyecto_id = ? AND tipo_analisis = ?
+        WHERE ${col} = ? AND tipo_analisis = ?
           AND payload_hash = ? AND estado = 'ok'
           AND creado_en >= DATE_SUB(NOW(), INTERVAL ? HOUR)
         ORDER BY creado_en DESC LIMIT 1`,
-      [proyectoId, def.tipo, hash, horasCache],
+      [entidadId, def.tipo, hash, horasCache],
     );
     if (previo) {
       return {
@@ -159,7 +190,7 @@ export async function ejecutarAnalisis<P extends PayloadIa, R>(
     validada = def.validar(cruda);
   } catch (e) {
     const mensaje = e instanceof Error ? e.message : String(e);
-    await registrarError(def, proyectoId, payload, hash, modelo, mensaje, latencia);
+    await registrarError(def, entidadId, payload, hash, modelo, mensaje, latencia);
     throw new Error(`La respuesta del modelo no cumple el contrato: ${mensaje}`);
   }
 
@@ -168,7 +199,7 @@ export async function ejecutarAnalisis<P extends PayloadIa, R>(
     : { datos: validada, descartadas: 0 };
 
   /* 4 · Persistencia transaccional */
-  const analisisId = await guardar(def, proyectoId, payload, hash, modelo, datos, {
+  const analisisId = await guardar(def, entidadId, payload, hash, modelo, datos, {
     tokensIn, tokensOut, latencia,
   });
 
@@ -189,7 +220,7 @@ export async function ejecutarAnalisis<P extends PayloadIa, R>(
 
 async function guardar<P extends PayloadIa, R>(
   def: DefinicionAnalisis<P, R>,
-  proyectoId: number,
+  entidadId: number,
   payload: P,
   hash: string,
   modelo: string,
@@ -202,12 +233,12 @@ async function guardar<P extends PayloadIa, R>(
 
     const [res] = await conexion.query(
       `INSERT INTO analisis_ia
-         (tipo_analisis, alcance, proyecto_id, modelo, prompt_version, payload_hash,
+         (tipo_analisis, alcance, ${columnaDe(def)}, modelo, prompt_version, payload_hash,
           payload_json, respuesta_json, resumen, puntaje_salud, estado,
           tokens_entrada, tokens_salida, latencia_ms)
        VALUES (?,?,?,?,?,?,?,?,?,?,'ok',?,?,?)`,
       [
-        def.tipo, def.alcance, proyectoId, modelo, PROMPT_VERSION, hash,
+        def.tipo, def.alcance, entidadId, modelo, PROMPT_VERSION, hash,
         JSON.stringify(payload), JSON.stringify(datos),
         def.resumenDe?.(datos) ?? null, def.puntajeDe?.(datos) ?? null,
         uso.tokensIn, uso.tokensOut, uso.latencia,
@@ -215,7 +246,7 @@ async function guardar<P extends PayloadIa, R>(
     );
     const analisisId = (res as { insertId: number }).insertId;
 
-    if (def.guardarExtra) await def.guardarExtra(conexion, analisisId, proyectoId, datos);
+    if (def.guardarExtra) await def.guardarExtra(conexion, analisisId, entidadId, datos);
 
     await conexion.commit();
     return analisisId;
@@ -228,15 +259,15 @@ async function guardar<P extends PayloadIa, R>(
 }
 
 async function registrarError<P extends PayloadIa, R>(
-  def: DefinicionAnalisis<P, R>, proyectoId: number, payload: unknown, hash: string,
+  def: DefinicionAnalisis<P, R>, entidadId: number, payload: unknown, hash: string,
   modelo: string, mensaje: string, latencia: number,
 ) {
   await pool.query(
     `INSERT INTO analisis_ia
-       (tipo_analisis, alcance, proyecto_id, modelo, prompt_version, payload_hash,
+       (tipo_analisis, alcance, ${columnaDe(def)}, modelo, prompt_version, payload_hash,
         payload_json, estado, error_mensaje, latencia_ms)
      VALUES (?,?,?,?,?,?,?,'error',?,?)`,
-    [def.tipo, def.alcance, proyectoId, modelo, PROMPT_VERSION, hash,
+    [def.tipo, def.alcance, entidadId, modelo, PROMPT_VERSION, hash,
      JSON.stringify(payload), mensaje.slice(0, 1000), latencia],
   );
 }
@@ -262,6 +293,7 @@ export function normalizarJson(v: unknown): unknown {
 const DEF_SALUD: DefinicionAnalisis<PayloadSaludProyecto, RespuestaSaludValidada> = {
   tipo: 'salud_proyecto',
   alcance: 'proyecto',
+  columnaEntidad: 'proyecto_id',
   claveEsquema: 'salud_proyecto',
   temperatura: 0.2,                        // análisis, no creatividad
   construirPayload: payloadSaludProyecto,
@@ -315,6 +347,7 @@ const DEF_SALUD: DefinicionAnalisis<PayloadSaludProyecto, RespuestaSaludValidada
 const DEF_PLANTEAMIENTO: DefinicionAnalisis<PayloadPlanteamientoProyecto, RespuestaPlanteamientoValidada> = {
   tipo: 'planteamiento_proyecto',
   alcance: 'proyecto',
+  columnaEntidad: 'proyecto_id',
   claveEsquema: 'planteamiento_proyecto',
   temperatura: 0.4,                        // redacción sobre una descripción
   construirPayload: payloadPlanteamientoProyecto,
@@ -332,6 +365,7 @@ const DEF_PLANTEAMIENTO: DefinicionAnalisis<PayloadPlanteamientoProyecto, Respue
 const DEF_TAREAS_SUGERIDAS: DefinicionAnalisis<PayloadTareasSugeridas, RespuestaTareasSugeridasValidada> = {
   tipo: 'tareas_sugeridas',
   alcance: 'proyecto',
+  columnaEntidad: 'proyecto_id',
   claveEsquema: 'tareas_sugeridas',
   temperatura: 0.3,
   construirPayload: payloadTareasSugeridas,
@@ -372,6 +406,121 @@ export function sugerirTareas(
   opciones: { forzar?: boolean } = {},
 ): Promise<ResultadoIa<RespuestaTareasSugeridasValidada>> {
   return ejecutarAnalisis(DEF_TAREAS_SUGERIDAS, proyectoId, opciones);
+}
+
+/**
+ * Perfilado de una persona a partir de texto pegado.
+ *
+ * A diferencia de los demás, este análisis necesita un insumo que no está en la
+ * base todavía, así que la definición se construye por llamada cerrando sobre
+ * el texto. El insumo entra en el payload y por tanto en el hash: cambiar el
+ * texto invalida la caché sola, que es justo lo que se quiere.
+ */
+function defPerfilCv(insumo: { texto: string; notas: string | null }) {
+  const def: DefinicionAnalisis<PayloadPerfilCv, RespuestaPerfilCvValidada> = {
+    tipo: 'perfil_cv',
+    alcance: 'persona',
+    columnaEntidad: 'persona_id',
+    claveEsquema: 'perfil_cv',
+    temperatura: 0.3,
+    construirPayload: (personaId) => payloadPerfilCv(personaId, insumo),
+    validar: (cruda) => {
+      const parseo = zRespuestaPerfilCv.safeParse(cruda);
+      if (!parseo.success) throw new Error(parseo.error.issues[0]?.message ?? parseo.error.message);
+      return parseo.data;
+    },
+    sanear: (r, p) => sanearPerfilCv(r, {
+      habilidades: new Set(p.catalogo_habilidades.map((h) => h.slug)),
+      sectores: new Set(p.catalogo_sectores.map((s) => s.slug)),
+    }),
+    simular: simularPerfilCv,
+    resumenDe: (r) => r.perfil.resumen,
+    // Sin `guardarExtra`: nada se escribe solo. El perfil se revisa y se acepta.
+  };
+  return def;
+}
+
+const DEF_PREGUNTAS: DefinicionAnalisis<PayloadPreguntasEncuadre, RespuestaPreguntasEncuadreValidada> = {
+  tipo: 'preguntas_encuadre',
+  alcance: 'proyecto',
+  columnaEntidad: 'proyecto_id',
+  claveEsquema: 'preguntas_encuadre',
+  temperatura: 0.4,
+  construirPayload: payloadPreguntasEncuadre,
+  validar: (cruda) => {
+    const parseo = zRespuestaPreguntasEncuadre.safeParse(cruda);
+    if (!parseo.success) throw new Error(parseo.error.issues[0]?.message ?? parseo.error.message);
+    return parseo.data;
+  },
+  simular: simularPreguntasEncuadre,
+  resumenDe: (r) => r.lectura_inicial,
+  /*
+   * Las preguntas se materializan con el análisis, en la misma transacción
+   * (igual que salud → recomendaciones_ia). El UNIQUE (proyecto, pregunta)
+   * hace que regenerar refresque el enunciado SIN tocar `respuesta` ni
+   * `estado`: lo ya contestado nunca se pierde.
+   */
+  guardarExtra: async (conexion, analisisId, proyectoId, datos) => {
+    for (const [i, q] of datos.preguntas.entries()) {
+      await conexion.query(
+        `INSERT INTO proyecto_preguntas
+           (proyecto_id, analisis_id, pregunta, motivo, tema, importancia, orden)
+         VALUES (?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+           analisis_id = VALUES(analisis_id),
+           motivo      = VALUES(motivo),
+           tema        = VALUES(tema),
+           importancia = VALUES(importancia),
+           orden       = VALUES(orden)`,
+        [proyectoId, analisisId, q.pregunta.slice(0, 500), q.motivo?.slice(0, 500) ?? null,
+         q.tema?.slice(0, 80) ?? null, q.importancia, i + 1],
+      );
+    }
+  },
+};
+
+const DEF_PERFILES: DefinicionAnalisis<PayloadPerfilesRequeridos, RespuestaPerfilesRequeridosValidada> = {
+  tipo: 'perfiles_requeridos',
+  alcance: 'proyecto',
+  columnaEntidad: 'proyecto_id',
+  claveEsquema: 'perfiles_requeridos',
+  temperatura: 0.3,
+  construirPayload: payloadPerfilesRequeridos,
+  validar: (cruda) => {
+    const parseo = zRespuestaPerfilesRequeridos.safeParse(cruda);
+    if (!parseo.success) throw new Error(parseo.error.issues[0]?.message ?? parseo.error.message);
+    return parseo.data;
+  },
+  sanear: (r, p) => sanearPerfilesRequeridos(r, {
+    personas: new Set(p.personas_disponibles.map((x) => x.persona_id)),
+    sectores: new Set(p.catalogo_sectores.map((s) => s.slug)),
+    habilidades: new Set(p.catalogo_habilidades.map((h) => h.slug)),
+  }),
+  simular: simularPerfilesRequeridos,
+  resumenDe: (r) => r.resumen_necesidad,
+  // Sin guardarExtra: los perfiles se revisan y se aceptan, como el planteamiento.
+};
+
+export function generarPreguntasEncuadre(
+  proyectoId: number,
+  opciones: { forzar?: boolean } = {},
+): Promise<ResultadoIa<RespuestaPreguntasEncuadreValidada>> {
+  return ejecutarAnalisis(DEF_PREGUNTAS, proyectoId, opciones);
+}
+
+export function generarPerfilesRequeridos(
+  proyectoId: number,
+  opciones: { forzar?: boolean } = {},
+): Promise<ResultadoIa<RespuestaPerfilesRequeridosValidada>> {
+  return ejecutarAnalisis(DEF_PERFILES, proyectoId, opciones);
+}
+
+export function analizarPerfilPersona(
+  personaId: number,
+  insumo: { texto: string; notas: string | null },
+  opciones: { forzar?: boolean } = {},
+): Promise<ResultadoIa<RespuestaPerfilCvValidada>> {
+  return ejecutarAnalisis(defPerfilCv(insumo), personaId, opciones);
 }
 
 /* -------------------------------------------------------------------------- */

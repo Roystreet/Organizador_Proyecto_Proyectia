@@ -4,6 +4,7 @@ import { Box, Breadcrumbs, Stack, Typography } from '@mui/material';
 import FormularioProyecto from '@/components/formularios/FormularioProyecto';
 import {
   proyectoParaEditar, listaCategorias, opcionesEmpresas, opcionesPersonas,
+  listaSectores, sectoresDeProyecto,
 } from '@/lib/consultas';
 
 export const dynamic = 'force-dynamic';
@@ -13,11 +14,13 @@ export default async function EditarProyecto({ params }: { params: Promise<{ id:
   const proyectoId = Number(id);
   if (!Number.isInteger(proyectoId)) notFound();
 
-  const [proyecto, categorias, empresas, personas] = await Promise.all([
+  const [proyecto, categorias, empresas, personas, sectores, suyos] = await Promise.all([
     proyectoParaEditar(proyectoId),
     listaCategorias(),
     opcionesEmpresas(),
     opcionesPersonas(),
+    listaSectores(),
+    sectoresDeProyecto(proyectoId),
   ]);
   if (!proyecto) notFound();
 
@@ -34,8 +37,9 @@ export default async function EditarProyecto({ params }: { params: Promise<{ id:
         <Typography variant="h2">Editar proyecto</Typography>
       </Box>
       <FormularioProyecto
-        catalogos={{ categorias, empresas, personas }}
+        catalogos={{ categorias, empresas, personas, sectores }}
         proyecto={proyecto}
+        sectoresMarcados={suyos.map((s) => s.id)}
       />
     </Stack>
   );

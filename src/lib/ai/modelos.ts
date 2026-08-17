@@ -19,6 +19,7 @@ const MODELO_POR_DEFECTO = 'gpt-4.1';
 const SOLO_TEXTO: ReadonlySet<TipoAnalisis> = new Set([
   'planteamiento_proyecto',
   'tareas_sugeridas',
+  'preguntas_encuadre',
 ]);
 
 const BARATOS: ReadonlySet<TipoAnalisis> = new Set([

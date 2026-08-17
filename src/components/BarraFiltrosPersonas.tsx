@@ -13,9 +13,11 @@ import { ETIQUETAS } from '@/theme/theme';
 export default function BarraFiltrosPersonas({
   empresas,
   habilidades,
+  sectores,
 }: {
   empresas: { id: number; nombre: string }[];
   habilidades: { id: number; nombre: string }[];
+  sectores: { id: number; nombre: string }[];
 }) {
   const router = useRouter();
   const ruta = usePathname();
@@ -78,6 +80,14 @@ export default function BarraFiltrosPersonas({
         <MenuItem value="">Todas</MenuItem>
         {habilidades.map((h) => (
           <MenuItem key={h.id} value={String(h.id)}>{h.nombre}</MenuItem>
+        ))}
+      </TextField>
+
+      <TextField select label="Sector" value={params.get('sector') ?? ''}
+                 onChange={(e) => aplicar({ sector: e.target.value })} sx={{ minWidth: 170 }}>
+        <MenuItem value="">Todos</MenuItem>
+        {sectores.map((s) => (
+          <MenuItem key={s.id} value={String(s.id)}>{s.nombre}</MenuItem>
         ))}
       </TextField>
     </Box>

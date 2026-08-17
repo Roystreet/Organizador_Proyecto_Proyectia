@@ -1,9 +1,12 @@
 import 'server-only';
 import type {
   PayloadSaludProyecto, PayloadPlanteamientoProyecto, PayloadTareasSugeridas,
+  PayloadPerfilCv, PayloadPreguntasEncuadre, PayloadPerfilesRequeridos,
 } from './tipos';
 import type {
   RespuestaSaludValidada, RespuestaPlanteamientoValidada, RespuestaTareasSugeridasValidada,
+  RespuestaPerfilCvValidada, RespuestaPreguntasEncuadreValidada,
+  RespuestaPerfilesRequeridosValidada,
 } from './validacion';
 
 /**
@@ -517,4 +520,442 @@ function construirResumen(
     : '';
 
   return cabeza + cuerpo + cola;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  perfil_cv                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/** Sin tildes, minúsculas: para buscar el catálogo dentro del texto libre. */
+const plano = (t: string) =>
+  // NFD + quitar diacríticos conserva la longitud, así que los índices que
+  // devuelve una búsqueda sobre el resultado sirven para cortar el original.
+  t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+/**
+ * Patrón para buscar un término del catálogo dentro de texto libre.
+ *
+ * Entre palabras admite cualquier espacio en blanco, no solo uno: en un CV
+ * pegado, «Seguridad de procesos químicos» aparece cortado por saltos de línea
+ * y con sangría, y una comparación literal no lo encontraría.
+ */
+function patron(aguja: string): RegExp | null {
+  const palabras = plano(aguja).trim().split(/\s+/).filter(Boolean);
+  if (palabras.join('').length < 3) return null;   // "IA", "QA": demasiado ruido
+  const cuerpo = palabras
+    .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s+');
+  return new RegExp(`(?<![a-z0-9])${cuerpo}(?![a-z0-9])`, 'g');
+}
+
+/** Cuenta apariciones de `aguja` como término, no como subcadena. */
+function ocurrencias(heno: string, aguja: string): number {
+  const re = patron(aguja);
+  return re ? (heno.match(re) ?? []).length : 0;
+}
+
+/**
+ * Fragmento alrededor de la primera aparición, como evidencia citable.
+ *
+ * `heno` es `original` en minúsculas y sin tildes: `plano` no cambia la
+ * longitud, así que los índices sirven para cortar el texto original tal cual.
+ */
+function fragmento(original: string, heno: string, aguja: string): string | null {
+  const re = patron(aguja);
+  if (!re) return null;
+  const m = re.exec(heno);
+  if (!m) return null;
+  const desde = Math.max(0, m.index - 90);
+  const hasta = Math.min(original.length, m.index + m[0].length + 90);
+  return `${desde > 0 ? '…' : ''}${original.slice(desde, hasta).trim()}${hasta < original.length ? '…' : ''}`;
+}
+
+/**
+ * Perfilado por reglas (IA_MODO=simulado).
+ *
+ * No "entiende" el texto: busca en él los nombres del catálogo de habilidades y
+ * sectores. Eso basta para probar el flujo entero sin API key y, de paso, mide
+ * el piso: todo lo que esto ya detecta no hace falta pagárselo al modelo. Lo
+ * que NO puede hacer —separar la experiencia laboral en cargos y fechas— lo
+ * declara en `datos_faltantes` en vez de inventarlo.
+ */
+export function simularPerfilCv(p: PayloadPerfilCv): RespuestaPerfilCvValidada {
+  const original = [p.insumo.texto, p.insumo.notas].filter(Boolean).join('\n\n');
+  const heno = plano(original);
+
+  const habilidades = p.catalogo_habilidades
+    .map((h) => ({ h, n: ocurrencias(heno, h.nombre) }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 25)
+    .map(({ h, n }) => ({
+      slug_existente: h.slug,
+      nombre: h.nombre,
+      tipo: h.tipo as RespuestaPerfilCvValidada['habilidades'][number]['tipo'],
+      nivel: 3,                                  // sin criterio real: el medio
+      anios_experiencia: null,
+      es_fortaleza: n >= 2,                      // repetido = probablemente central
+      evidencia: fragmento(original, heno, h.nombre),
+      confianza: 0.4,
+    }));
+
+  const sectoresDetectados = p.catalogo_sectores
+    .map((s) => ({ s, n: ocurrencias(heno, s.nombre) }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 5);
+
+  const sectores = sectoresDetectados.map(({ s }, i) => ({
+    slug_existente: s.slug,
+    nombre: s.nombre,
+    nivel: 3,
+    anios_experiencia: null,
+    es_principal: i === 0,                       // el más mencionado
+    evidencia: fragmento(original, heno, s.nombre),
+    confianza: 0.4,
+  }));
+
+  const email = /[\w.+-]+@[\w-]+\.[\w.]+/.exec(original)?.[0] ?? null;
+  const telefono = /(?:\+?\d[\d\s().-]{7,}\d)/.exec(original)?.[0]?.trim() ?? null;
+
+  const top = habilidades.slice(0, 3);
+  const sectorPrincipal = sectores.find((s) => s.es_principal) ?? null;
+
+  const datosFaltantes = [
+    'Las reglas locales no separan la experiencia laboral en cargos y fechas: ' +
+    'eso necesita el modelo de texto (IA_MODO=real).',
+  ];
+  if (habilidades.length === 0) {
+    datosFaltantes.push(
+      'No se reconoció ninguna habilidad del catálogo en el texto. Puede que el ' +
+      'catálogo no cubra este perfil todavía.',
+    );
+  }
+  if (p.insumo.truncado) datosFaltantes.push('El texto se truncó a 25.000 caracteres.');
+
+  return {
+    perfil: {
+      nombre_completo: p.persona.nombre_completo,
+      email,
+      telefono,
+      rol_principal: p.persona.rol_principal,
+      seniority: (p.persona.seniority ?? null) as RespuestaPerfilCvValidada['perfil']['seniority'],
+      anios_experiencia: p.persona.anios_experiencia,
+      ubicacion: p.persona.ubicacion,
+      resumen:
+        `${p.persona.nombre_completo}: ${habilidades.length} habilidad(es) del catálogo ` +
+        `reconocidas en el texto${sectorPrincipal ? `, con ${sectorPrincipal.nombre} como sector principal` : ''}. ` +
+        'Perfil armado por reglas locales sobre el texto aportado, sin modelo de lenguaje.',
+    },
+    habilidades,
+    sectores,
+    experiencias: [],
+    fortalezas: top.map((h) => ({
+      titulo: h.nombre,
+      detalle: `Aparece de forma recurrente en el texto aportado.`,
+      contexto: sectorPrincipal?.nombre ?? null,
+      confianza: 0.35,
+    })),
+    aportes: sectorPrincipal
+      ? [{
+          titulo: `Conocimiento del sector ${sectorPrincipal.nombre}`,
+          detalle: `El texto lo sitúa en ${sectorPrincipal.nombre}; es el contexto donde su ` +
+                   'experiencia rinde sin curva de aprendizaje.',
+          contexto: sectorPrincipal.nombre,
+          confianza: 0.35,
+        }]
+      : [],
+    preguntas_sugeridas: top.map((h) => ({
+      pregunta: `¿En qué trabajo aplicaste ${h.nombre} y qué aprendiste que no esté documentado?`,
+      motivo: `Se detectó ${h.nombre} en su perfil y la organización no tiene ese conocimiento escrito.`,
+      tema: h.nombre,
+    })),
+    areas_mejora: [],
+    encaje_con_necesidades: p.necesidades_actuales.map((n) => {
+      const tiene = habilidades.find((h) => h.slug_existente === n.slug);
+      return { habilidad: n.habilidad, cubre: Boolean(tiene), nivel_estimado: tiene ? 3 : null };
+    }),
+    confianza_global: 0.35,
+    datos_faltantes: datosFaltantes,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  preguntas_encuadre                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Preguntas de encuadre por reglas (IA_MODO=simulado).
+ *
+ * Un banco fijo filtrado por lo que falta en el proyecto. No "entiende" la
+ * descripción, pero sí sabe qué campos vacíos bloquean la planificación, que
+ * es de donde salen las preguntas que más importan.
+ */
+export function simularPreguntasEncuadre(
+  p: PayloadPreguntasEncuadre,
+): RespuestaPreguntasEncuadreValidada {
+  const pr = p.proyecto;
+  const preguntas: RespuestaPreguntasEncuadreValidada['preguntas'] = [];
+
+  if (!pr.descripcion_libre || pr.descripcion_libre.trim().length < 60) {
+    preguntas.push({
+      pregunta: '¿Qué problema concreto resuelve este proyecto, y para quién?',
+      motivo: 'Sin el problema y el destinatario no se puede juzgar si el alcance propuesto sobra o falta.',
+      tema: 'alcance',
+      importancia: 'critica',
+      ejemplo_respuesta: 'El área de ventas pierde 2 h diarias consolidando reportes a mano.',
+    });
+  }
+  if (!pr.objetivo) {
+    preguntas.push({
+      pregunta: '¿Cómo sabremos que salió bien? Da un criterio que se pueda medir.',
+      motivo: 'El objetivo es el ancla de todo el análisis posterior: sin él, «va bien» no significa nada.',
+      tema: 'objetivo',
+      importancia: 'critica',
+      ejemplo_respuesta: 'Que el 80 % de los pedidos entren por el sistema en tres meses.',
+    });
+  }
+  if (!pr.fechas.fin_estimada) {
+    preguntas.push({
+      pregunta: '¿Hay una fecha comprometida con alguien de fuera? ¿Cuál y por qué esa?',
+      motivo: 'Una fecha externa cambia por completo el orden de las fases y qué se puede recortar.',
+      tema: 'plazos',
+      importancia: 'alta',
+      ejemplo_respuesta: 'Sí, el 30 de noviembre: arranca la temporada alta.',
+    });
+  }
+  if (pr.sectores.length === 0) {
+    preguntas.push({
+      pregunta: '¿En qué sector o industria se enmarca este proyecto?',
+      motivo: 'El sector condiciona la normativa aplicable y qué perfiles hacen falta.',
+      tema: 'normativa',
+      importancia: 'alta',
+      ejemplo_respuesta: 'Farmacia: hay que cumplir BPM y llevar registro sanitario.',
+    });
+  }
+
+  // Siempre útiles, independientemente de lo que ya esté lleno.
+  preguntas.push(
+    {
+      pregunta: '¿Qué queda explícitamente FUERA del alcance?',
+      motivo: 'Lo que no se escribe como fuera acaba pedido a mitad de camino como si estuviera dentro.',
+      tema: 'alcance',
+      importancia: 'alta',
+      ejemplo_respuesta: 'No incluye migrar el histórico anterior a 2024.',
+    },
+    {
+      pregunta: '¿Qué restricción real condiciona la solución: presupuesto, normativa, tecnología o personal?',
+      motivo: 'Define qué soluciones son viables antes de diseñar una que no lo sea.',
+      tema: 'restricciones',
+      importancia: 'alta',
+      ejemplo_respuesta: 'Tiene que correr sobre el ERP actual, no se puede reemplazar.',
+    },
+    {
+      pregunta: '¿De quién dependes para algo que no controlas tú?',
+      motivo: 'Las dependencias externas son la causa más común de bloqueo, y se detectan antes o se sufren después.',
+      tema: 'riesgos',
+      importancia: 'media',
+      ejemplo_respuesta: 'Del proveedor del ERP para que habilite el API.',
+    },
+    {
+      pregunta: '¿Qué pasa si esto no se hace?',
+      motivo: 'Sitúa la prioridad real del proyecto frente a los demás del portafolio.',
+      tema: 'objetivo',
+      importancia: 'media',
+      ejemplo_respuesta: 'Seguimos con el proceso manual; es sostenible pero no escala.',
+    },
+  );
+
+  // No repetir lo que ya está respondido o pendiente.
+  const yaHechas = new Set(
+    [...p.preguntas_ya_respondidas.map((x) => x.pregunta), ...p.preguntas_pendientes]
+      .map((x) => x.trim().toLowerCase()),
+  );
+  const filtradas = preguntas.filter((q) => !yaHechas.has(q.pregunta.trim().toLowerCase()));
+
+  const faltantes: string[] = [];
+  if (!pr.descripcion_libre) faltantes.push('Se asumirá el alcance a partir del nombre del proyecto.');
+  if (!pr.objetivo) faltantes.push('Sin criterio de éxito, el avance se medirá solo por tareas cerradas.');
+  if (!pr.fechas.fin_estimada) faltantes.push('Sin fecha de cierre, las fases se estimarán por duración relativa.');
+
+  return {
+    lectura_inicial:
+      `${pr.nombre}${pr.categoria ? ` (${pr.categoria})` : ''} está en estado ${pr.estado}. `
+      + (pr.descripcion_libre
+        ? 'Hay una descripción registrada, pero falta cerrar el encuadre antes de planificar.'
+        : 'Todavía no hay descripción: es lo primero que hace falta para poder planificar.')
+      + ` Quedan ${filtradas.length} pregunta(s) por resolver.`,
+    preguntas: filtradas.slice(0, 8),
+    supuestos_provisionales: faltantes,
+    confianza: 0.4,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  perfiles_requeridos                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Roles típicos por categoría, para cuando el proyecto no declara habilidades. */
+const ROLES_POR_CATEGORIA: Record<string, string[]> = {
+  'Desarrollo Web': ['Líder de proyecto', 'Desarrollador Full-stack', 'Diseñador UI/UX'],
+  'Aplicación Móvil': ['Líder de proyecto', 'Desarrollador móvil', 'Diseñador UI/UX'],
+  'Datos e IA': ['Líder de proyecto', 'Analista de datos'],
+  'Infraestructura': ['Líder de proyecto', 'Especialista en infraestructura'],
+  'Integraciones': ['Líder de proyecto', 'Especialista en integraciones'],
+  'Consultoría': ['Consultor líder', 'Analista funcional'],
+};
+
+const ROLES_GENERICOS = ['Líder de proyecto', 'Especialista del dominio'];
+
+export function simularPerfilesRequeridos(
+  p: PayloadPerfilesRequeridos,
+): RespuestaPerfilesRequeridosValidada {
+  const pr = p.proyecto;
+  const sectorPrincipal = pr.sectores[0] ?? null;
+  const slugSector = p.catalogo_sectores.find((s) => s.nombre === sectorPrincipal)?.slug ?? null;
+
+  /** Puntaje determinista: sector, habilidades coincidentes y carga. */
+  const puntuar = (
+    persona: PayloadPerfilesRequeridos['personas_disponibles'][number],
+    slugsPedidos: string[],
+  ) => {
+    let puntaje = 0;
+    const brechas: string[] = [];
+
+    if (sectorPrincipal && persona.sectores.includes(sectorPrincipal)) puntaje += 40;
+    else if (sectorPrincipal) brechas.push(`Sin experiencia registrada en ${sectorPrincipal}`);
+
+    const suyas = new Set(persona.habilidades.map((h) => h.slug));
+    const coincidencias = slugsPedidos.filter((s) => suyas.has(s));
+    puntaje += Math.min(40, coincidencias.length * 10);
+    for (const s of slugsPedidos.filter((x) => !suyas.has(x))) {
+      const nombre = p.catalogo_habilidades.find((h) => h.slug === s)?.nombre ?? s;
+      brechas.push(`No tiene registrada: ${nombre}`);
+    }
+
+    if (persona.carga.tareas_abiertas <= 3) puntaje += 20;
+    else if (persona.carga.tareas_abiertas >= 8) puntaje -= 15;
+
+    const riesgo = persona.carga.tareas_abiertas >= 8
+      ? 'alto' : persona.carga.tareas_abiertas >= 4 ? 'medio' : 'bajo';
+
+    return {
+      persona_id: persona.persona_id,
+      puntaje_ajuste: Math.max(0, Math.min(100, puntaje)),
+      por_que: coincidencias.length > 0
+        ? `Cubre ${coincidencias.length} de las ${slugsPedidos.length} habilidades pedidas`
+          + (sectorPrincipal && persona.sectores.includes(sectorPrincipal)
+            ? ` y viene del sector ${sectorPrincipal}.` : '.')
+        : sectorPrincipal && persona.sectores.includes(sectorPrincipal)
+          ? `Viene del sector ${sectorPrincipal}, aunque no cubre las habilidades pedidas.`
+          : 'Coincidencia débil: ni sector ni habilidades registradas encajan.',
+      brechas: brechas.slice(0, 5),
+      riesgo_sobrecarga: riesgo as 'bajo' | 'medio' | 'alto',
+    };
+  };
+
+  const declaradas = pr.habilidades_ya_declaradas;
+  const perfiles: RespuestaPerfilesRequeridosValidada['perfiles'] = [];
+
+  if (declaradas.length > 0) {
+    // Agrupa lo declarado por criticidad: un perfil por grupo.
+    const grupos = new Map<string, typeof declaradas>();
+    for (const h of declaradas) {
+      const g = grupos.get(h.criticidad) ?? [];
+      g.push(h);
+      grupos.set(h.criticidad, g);
+    }
+    for (const [criticidad, lista] of grupos) {
+      const slugs = lista
+        .map((h) => p.catalogo_habilidades.find((c) => c.nombre === h.nombre)?.slug)
+        .filter((x): x is string => Boolean(x));
+      const habilidades = lista.map((h) => {
+        const cat = p.catalogo_habilidades.find((c) => c.nombre === h.nombre);
+        return {
+          slug_existente: cat?.slug ?? null,
+          nombre: h.nombre,
+          tipo: (cat?.tipo ?? 'tecnica') as 'tecnica' | 'herramienta' | 'dominio' | 'blanda' | 'idioma' | 'metodologia',
+          nivel_minimo: h.nivel_minimo,
+          criticidad: criticidad as 'deseable' | 'importante' | 'indispensable',
+        };
+      });
+      perfiles.push({
+        rol: `Especialista en ${lista[0].nombre}`,
+        proposito: `Cubre las habilidades marcadas como ${criticidad} en este proyecto.`,
+        seniority: criticidad === 'indispensable' ? 'senior' : 'semi_senior',
+        sector_slug: slugSector,
+        cantidad: 1,
+        dedicacion_pct: null,
+        criticidad: criticidad as 'deseable' | 'importante' | 'indispensable',
+        fases: [],
+        habilidades,
+        candidatos: p.personas_disponibles
+          .map((x) => puntuar(x, slugs))
+          .filter((c) => c.puntaje_ajuste > 0)
+          .sort((a, b) => b.puntaje_ajuste - a.puntaje_ajuste)
+          .slice(0, 3),
+      });
+    }
+  } else {
+    const roles = ROLES_POR_CATEGORIA[pr.categoria ?? ''] ?? ROLES_GENERICOS;
+    roles.forEach((rol, i) => {
+      perfiles.push({
+        rol,
+        proposito: i === 0
+          ? 'Coordina el proyecto y responde por la entrega.'
+          : `Ejecuta el trabajo principal${sectorPrincipal ? ` en el contexto de ${sectorPrincipal}` : ''}.`,
+        seniority: i === 0 ? 'lead' : 'semi_senior',
+        sector_slug: i === 0 ? null : slugSector,
+        cantidad: 1,
+        dedicacion_pct: null,
+        criticidad: i === 0 ? 'indispensable' : 'importante',
+        fases: [],
+        habilidades: [],
+        candidatos: p.personas_disponibles
+          .map((x) => puntuar(x, []))
+          .filter((c) => c.puntaje_ajuste > 0)
+          .sort((a, b) => b.puntaje_ajuste - a.puntaje_ajuste)
+          .slice(0, 3),
+      });
+    });
+  }
+
+  // Brechas: lo que se pide y nadie cubre al nivel requerido.
+  const brechas: RespuestaPerfilesRequeridosValidada['brechas_del_directorio'] = [];
+  for (const h of declaradas) {
+    const slug = p.catalogo_habilidades.find((c) => c.nombre === h.nombre)?.slug;
+    const quien = p.personas_disponibles.filter(
+      (x) => slug && x.habilidades.some((y) => y.slug === slug && y.nivel >= h.nivel_minimo),
+    );
+    if (quien.length === 0) {
+      const cerca = p.personas_disponibles.filter(
+        (x) => slug && x.habilidades.some((y) => y.slug === slug),
+      );
+      brechas.push({
+        habilidad: h.nombre,
+        nivel_requerido: h.nivel_minimo,
+        situacion: cerca.length > 0
+          ? `${cerca.length} persona(s) la tienen registrada pero por debajo del nivel ${h.nivel_minimo}.`
+          : 'Nadie del directorio la tiene registrada.',
+        sugerencia: cerca.length > 0 ? 'capacitar' : 'contratar',
+      });
+    }
+  }
+
+  return {
+    resumen_necesidad:
+      `${pr.nombre} necesita ${perfiles.length} perfil(es)`
+      + (sectorPrincipal ? `, con experiencia en ${sectorPrincipal}` : '')
+      + `. Hay ${p.personas_disponibles.length} persona(s) en el directorio para cruzar.`,
+    perfiles,
+    brechas_del_directorio: brechas,
+    confianza: 0.4,
+    datos_faltantes: [
+      'Perfiles derivados por reglas locales a partir de las habilidades declaradas '
+      + 'y la categoría; el modelo de texto los ajustaría a la descripción real.',
+      ...(declaradas.length === 0
+        ? ['El proyecto no declara habilidades requeridas: los roles salen de la categoría.']
+        : []),
+    ],
+  };
 }

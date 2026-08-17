@@ -3,14 +3,14 @@
 import * as React from 'react';
 import {
   Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Divider,
-  LinearProgress, Stack, Typography, Tooltip, IconButton, Collapse,
+  LinearProgress, Stack, Typography, Tooltip, IconButton,
 } from '@mui/material';
 import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
 import CheckCircleOutline from '@mui/icons-material/CheckCircleOutlineOutlined';
 import HighlightOffOutlined from '@mui/icons-material/HighlightOffOutlined';
-import ExpandMoreOutlined from '@mui/icons-material/ExpandMoreOutlined';
 import ChipSemantico from './ChipSemantico';
+import Seccion from './SeccionColapsable';
 import PuntoSalud from './PuntoSalud';
 import type { RespuestaSaludProyecto } from '@/lib/ai/tipos';
 
@@ -285,24 +285,5 @@ export default function PanelIa({
         {cargando && !d && <LinearProgress sx={{ mt: 2 }} />}
       </CardContent>
     </Card>
-  );
-}
-
-function Seccion({ titulo, children }: { titulo: string; children: React.ReactNode }) {
-  const [abierto, setAbierto] = React.useState(true);
-  return (
-    <Box>
-      <Box
-        onClick={() => setAbierto((v) => !v)}
-        sx={{ display: 'flex', alignItems: 'center', gap: 0.5, cursor: 'pointer', userSelect: 'none' }}
-      >
-        <Typography variant="overline" color="text.secondary">{titulo}</Typography>
-        <ExpandMoreOutlined
-          fontSize="small"
-          sx={{ color: 'text.disabled', transform: abierto ? 'rotate(180deg)' : 'none', transition: '.2s' }}
-        />
-      </Box>
-      <Collapse in={abierto}>{children}</Collapse>
-    </Box>
   );
 }

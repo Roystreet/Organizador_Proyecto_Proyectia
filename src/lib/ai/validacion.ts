@@ -213,3 +213,234 @@ export function sanearTareasSugeridas(
   });
   return { datos: { ...r, tareas }, descartadas };
 }
+
+/* -------------------------------------------------------------------------- */
+/*  perfil_cv                                                                  */
+/* -------------------------------------------------------------------------- */
+
+const NIVEL = z.number().int().min(1).max(5);
+const CONFIANZA = z.number().min(0).max(1);
+const FECHA_ISO = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida (AAAA-MM-DD)');
+
+export const zRespuestaPerfilCv = z.object({
+  perfil: z.object({
+    nombre_completo: z.string().nullable(),
+    email: z.string().nullable(),
+    telefono: z.string().nullable(),
+    rol_principal: z.string().max(100).nullable(),
+    seniority: z.enum(['junior', 'semi_senior', 'senior', 'lead', 'director']).nullable(),
+    anios_experiencia: z.number().min(0).max(70).nullable(),
+    ubicacion: z.string().max(120).nullable(),
+    resumen: z.string().min(10),
+  }),
+  habilidades: z.array(z.object({
+    slug_existente: z.string().nullable(),
+    nombre: z.string().min(1).max(80),
+    tipo: z.enum(['tecnica', 'herramienta', 'dominio', 'blanda', 'idioma', 'metodologia']),
+    nivel: NIVEL,
+    anios_experiencia: z.number().min(0).max(70).nullable(),
+    es_fortaleza: z.boolean(),
+    evidencia: z.string().max(500).nullable(),
+    confianza: CONFIANZA,
+  })).max(40),
+  sectores: z.array(z.object({
+    slug_existente: z.string().nullable(),
+    nombre: z.string().min(1).max(80),
+    nivel: NIVEL,
+    anios_experiencia: z.number().min(0).max(70).nullable(),
+    es_principal: z.boolean(),
+    evidencia: z.string().max(500).nullable(),
+    confianza: CONFIANZA,
+  })).max(8),
+  experiencias: z.array(z.object({
+    empresa: z.string().min(1).max(150),
+    cargo: z.string().min(1).max(150),
+    industria: z.string().max(100).nullable(),
+    fecha_inicio: FECHA_ISO.nullable(),
+    fecha_fin: FECHA_ISO.nullable(),
+    es_actual: z.boolean(),
+    logros: z.array(z.string()),
+  })).max(20),
+  fortalezas: z.array(z.object({
+    titulo: z.string().min(1).max(200),
+    detalle: z.string(),
+    contexto: z.string().max(255).nullable(),
+    confianza: CONFIANZA,
+  })).max(15),
+  aportes: z.array(z.object({
+    titulo: z.string().min(1).max(200),
+    detalle: z.string(),
+    contexto: z.string().max(255).nullable(),
+    confianza: CONFIANZA,
+  })).max(15),
+  preguntas_sugeridas: z.array(z.object({
+    pregunta: z.string().min(5).max(200),
+    motivo: z.string(),
+    tema: z.string().max(255),
+  })).max(10),
+  areas_mejora: z.array(z.object({
+    titulo: z.string().min(1).max(200),
+    detalle: z.string(),
+  })).max(10),
+  encaje_con_necesidades: z.array(z.object({
+    habilidad: z.string(),
+    cubre: z.boolean(),
+    nivel_estimado: NIVEL.nullable(),
+  })).max(30),
+  confianza_global: CONFIANZA,
+  datos_faltantes: z.array(z.string()),
+});
+
+export type RespuestaPerfilCvValidada = z.infer<typeof zRespuestaPerfilCv>;
+
+/** Compara nombres ignorando tildes, mayúsculas y espacios sobrantes. */
+const normalizar = (t: string) =>
+  t.normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // igual que generarSlug
+    .toLowerCase().trim().replace(/\s+/g, ' ');
+
+/**
+ * Saneo del perfil.
+ *
+ * Dos problemas distintos: el modelo puede citar un slug que no existe (se
+ * anula, y la entrada pasa a ser "habilidad nueva"), y puede proponer la misma
+ * habilidad dos veces con nombres ligeramente distintos. Lo segundo importa
+ * porque `persona_habilidades` tiene UNIQUE (persona, habilidad): un duplicado
+ * haría fallar el INSERT entero.
+ */
+export function sanearPerfilCv(
+  r: RespuestaPerfilCvValidada,
+  catalogos: { habilidades: Set<string>; sectores: Set<string> },
+): { datos: RespuestaPerfilCvValidada; descartadas: number } {
+  let descartadas = 0;
+
+  const dedupe = <T extends { slug_existente: string | null; nombre: string }>(
+    lista: T[], validos: Set<string>,
+  ): T[] => {
+    const vistos = new Set<string>();
+    const salida: T[] = [];
+    for (const item of lista) {
+      let slug = item.slug_existente;
+      if (slug !== null && !validos.has(slug)) {
+        slug = null;                       // inventado: se trata como nuevo
+        descartadas += 1;
+      }
+      const clave = slug ?? `nuevo:${normalizar(item.nombre)}`;
+      if (vistos.has(clave)) continue;     // el primero gana
+      vistos.add(clave);
+      salida.push({ ...item, slug_existente: slug });
+    }
+    return salida;
+  };
+
+  return {
+    datos: {
+      ...r,
+      habilidades: dedupe(r.habilidades, catalogos.habilidades),
+      sectores: dedupe(r.sectores, catalogos.sectores),
+    },
+    descartadas,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  preguntas_encuadre                                                         */
+/* -------------------------------------------------------------------------- */
+
+export const zRespuestaPreguntasEncuadre = z.object({
+  lectura_inicial: z.string().min(10),
+  preguntas: z.array(z.object({
+    pregunta: z.string().min(8, 'Pregunta demasiado corta').max(500),
+    motivo: z.string().max(500),
+    tema: z.string().max(80),
+    importancia: PRIORIDAD,
+    ejemplo_respuesta: z.string().max(500).nullable(),
+  })).max(10),
+  supuestos_provisionales: z.array(z.string()).max(15),
+  confianza: z.number().min(0).max(1),
+});
+
+export type RespuestaPreguntasEncuadreValidada = z.infer<typeof zRespuestaPreguntasEncuadre>;
+
+/* -------------------------------------------------------------------------- */
+/*  perfiles_requeridos                                                        */
+/* -------------------------------------------------------------------------- */
+
+const CRITICIDAD = z.enum(['deseable', 'importante', 'indispensable']);
+
+export const zRespuestaPerfilesRequeridos = z.object({
+  resumen_necesidad: z.string().min(10),
+  perfiles: z.array(z.object({
+    rol: z.string().min(2).max(80),
+    proposito: z.string(),
+    seniority: z.enum(['junior', 'semi_senior', 'senior', 'lead', 'director']),
+    sector_slug: z.string().nullable(),
+    cantidad: z.number().int().min(1).max(20),
+    dedicacion_pct: z.number().int().min(1).max(100).nullable(),
+    criticidad: CRITICIDAD,
+    fases: z.array(z.string()).max(20),
+    habilidades: z.array(z.object({
+      slug_existente: z.string().nullable(),
+      nombre: z.string().min(1).max(80),
+      tipo: z.enum(['tecnica', 'herramienta', 'dominio', 'blanda', 'idioma', 'metodologia']),
+      nivel_minimo: z.number().int().min(1).max(5),
+      criticidad: CRITICIDAD,
+    })).max(20),
+    candidatos: z.array(z.object({
+      persona_id: z.number().int().positive(),
+      puntaje_ajuste: z.number().int().min(0).max(100),
+      por_que: z.string(),
+      brechas: z.array(z.string()).max(10),
+      riesgo_sobrecarga: TRIPLE,
+    })).max(10),
+  })).max(8),
+  brechas_del_directorio: z.array(z.object({
+    habilidad: z.string().max(120),
+    nivel_requerido: z.number().int().min(1).max(5),
+    situacion: z.string(),
+    sugerencia: z.enum(['capacitar', 'contratar', 'subcontratar', 'redistribuir', 'aceptar_riesgo']),
+  })).max(15),
+  confianza: z.number().min(0).max(1),
+  datos_faltantes: z.array(z.string()),
+});
+
+export type RespuestaPerfilesRequeridosValidada = z.infer<typeof zRespuestaPerfilesRequeridos>;
+
+/**
+ * Saneo de perfiles requeridos.
+ *
+ * Un `persona_id` inventado se convertiría en una asignación a alguien que no
+ * existe, así que el candidato se descarta entero en vez de anularse: sin
+ * persona, la recomendación no dice nada.
+ */
+export function sanearPerfilesRequeridos(
+  r: RespuestaPerfilesRequeridosValidada,
+  validos: { personas: Set<number>; sectores: Set<string>; habilidades: Set<string> },
+): { datos: RespuestaPerfilesRequeridosValidada; descartadas: number } {
+  let descartadas = 0;
+
+  const perfiles = r.perfiles.map((p) => {
+    const candidatos = p.candidatos.filter((c) => {
+      const ok = validos.personas.has(c.persona_id);
+      if (!ok) descartadas += 1;
+      return ok;
+    });
+
+    let sector = p.sector_slug;
+    if (sector !== null && !validos.sectores.has(sector)) {
+      sector = null;
+      descartadas += 1;
+    }
+
+    const habilidades = p.habilidades.map((h) => {
+      if (h.slug_existente !== null && !validos.habilidades.has(h.slug_existente)) {
+        descartadas += 1;
+        return { ...h, slug_existente: null };   // pasa a ser habilidad nueva
+      }
+      return h;
+    });
+
+    return { ...p, candidatos, sector_slug: sector, habilidades };
+  });
+
+  return { datos: { ...r, perfiles }, descartadas };
+}
