@@ -1,0 +1,33 @@
+# MySQL para el Organizador de Proyectos.
+#
+# Opcional: si ya tienes MySQL instalado en la máquina, ignora este archivo.
+# Si lo usas, levanta la base con `pnpm db:up` antes del primer `pnpm dev`.
+#
+# El healthcheck importa: sin él, `pnpm dev` intentaría conectarse mientras
+# MySQL todavía está inicializando. Aun así, el script de arranque reintenta
+# la conexión durante 40 segundos, así que ambos caminos están cubiertos.
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: organizador-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root1234
+      MYSQL_DATABASE: proyectos          # debe coincidir con DB_NAME de .env.local
+    ports:
+      - "3306:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - datos-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot1234"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  datos-mysql:
