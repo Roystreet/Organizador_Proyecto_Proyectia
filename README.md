@@ -74,9 +74,14 @@ funciona desde el primer arranque usando un analista por reglas
 ```env
 IA_MODO=real
 OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.6-terra
+OPENAI_REASONING_EFFORT=max
 ```
 
 Si `IA_MODO=real` pero no hay clave, cae al modo simulado en vez de fallar.
+Los análisis pesados usan el modelo y el esfuerzo principales; los flujos de
+texto y los frecuentes pueden ajustarse por separado con las variantes
+`_TEXTO` y `_BARATO` descritas en `.env.example`.
 
 ## Comandos
 

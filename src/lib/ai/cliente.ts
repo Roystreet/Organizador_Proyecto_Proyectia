@@ -21,7 +21,7 @@ import {
   simularSaludProyecto, simularPlanteamientoProyecto, simularTareasSugeridas,
   simularPerfilCv, simularPreguntasEncuadre, simularPerfilesRequeridos,
 } from './simulador';
-import { modeloPara } from './modelos';
+import { modeloPara, razonamientoPara } from './modelos';
 import type {
   PayloadIa, PayloadSaludProyecto, PayloadPlanteamientoProyecto, PayloadTareasSugeridas,
   PayloadPerfilCv, PayloadPreguntasEncuadre, PayloadPerfilesRequeridos, TipoAnalisis,
@@ -163,23 +163,24 @@ export async function ejecutarAnalisis<P extends PayloadIa, R>(
     cruda = def.simular(payload);
   } else {
     modelo = modeloPara(def.tipo);
+    const esfuerzo = razonamientoPara(def.tipo, modelo);
     const { default: OpenAI } = await import('openai');
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const r = await openai.chat.completions.create({
+    const r = await openai.responses.create({
       model: modelo,
-      temperature: def.temperatura,
-      messages: [
-        { role: 'system', content: promptSistema(def.tipo) },
-        { role: 'user', content: mensajeUsuario(payload) },
-      ],
-      response_format: formatoRespuesta(def.claveEsquema),
+      instructions: promptSistema(def.tipo),
+      input: mensajeUsuario(payload),
+      text: { format: formatoRespuesta(def.claveEsquema) },
+      ...(esfuerzo
+        ? { reasoning: { effort: esfuerzo } }
+        : { temperature: def.temperatura }),
     });
-    const texto = r.choices[0]?.message?.content;
+    const texto = r.output_text;
     if (!texto) throw new Error('El modelo devolvió una respuesta vacía');
     cruda = JSON.parse(texto);
-    tokensIn = r.usage?.prompt_tokens ?? null;
-    tokensOut = r.usage?.completion_tokens ?? null;
+    tokensIn = r.usage?.input_tokens ?? null;
+    tokensOut = r.usage?.output_tokens ?? null;
   }
 
   const latencia = Date.now() - inicio;

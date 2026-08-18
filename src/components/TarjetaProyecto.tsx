@@ -39,6 +39,7 @@ export default function TarjetaProyecto({
   salud: Salud;
 }) {
   const esBorrador = p.wizard_paso != null;
+  const esArchivado = Boolean(p.archivado);
   const avance = p.tareas_total > 0
     ? Math.round((p.tareas_completadas / p.tareas_total) * 100)
     : p.progreso_pct;
@@ -48,7 +49,8 @@ export default function TarjetaProyecto({
   const cerca = !cerrado && p.dias_restantes !== null && p.dias_restantes >= 0 && p.dias_restantes <= 14;
 
   return (
-    <Card sx={{ height: '100%' }}>
+    // Un archivado se ve, pero apagado: está fuera del portafolio activo.
+    <Card sx={{ height: '100%', opacity: esArchivado ? 0.6 : 1 }}>
       {/* Un borrador lleva al asistente, no al detalle: si no, se queda
           atrapado en una página vacía sin forma de retomarlo. */}
       <CardActionArea component={Link} sx={{ height: '100%' }}
@@ -62,6 +64,10 @@ export default function TarjetaProyecto({
               {p.codigo}
             </Typography>
             <Box sx={{ flexGrow: 1 }} />
+            {esArchivado && (
+              <Chip size="small" variant="outlined" label="Archivado"
+                    sx={{ height: 20, fontSize: '0.65rem' }} />
+            )}
             {esBorrador && (
               <Chip size="small" color="warning" variant="outlined"
                     label={`Borrador · paso ${p.wizard_paso}/4`}

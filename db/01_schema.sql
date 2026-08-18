@@ -497,6 +497,7 @@ CREATE TABLE IF NOT EXISTS `tareas` (
   `motivo_bloqueo`   VARCHAR(500) NULL COMMENT 'Se llena cuando estado = bloqueada',
   `bloqueada_desde`  DATETIME NULL,
   `orden`            INT NOT NULL DEFAULT 0,
+  `version`          INT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'Bloqueo optimista',
   `creado_en`        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `actualizado_en`   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -619,6 +620,97 @@ CREATE TABLE IF NOT EXISTS `asunto_etiquetas` (
     REFERENCES `asuntos` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `fk_ae_etiqueta` FOREIGN KEY (`etiqueta_id`)
     REFERENCES `etiquetas` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB;
+
+-- Operación de reuniones y conocimiento transversal.
+CREATE TABLE IF NOT EXISTS `reuniones` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `proyecto_id` INT UNSIGNED NOT NULL,
+  `titulo` VARCHAR(255) NOT NULL, `objetivo` TEXT NULL, `agenda` TEXT NULL,
+  `organizador_id` INT UNSIGNED NULL,
+  `modalidad` ENUM('presencial','virtual','hibrida') NOT NULL DEFAULT 'virtual',
+  `ubicacion` VARCHAR(255) NULL, `enlace` VARCHAR(500) NULL,
+  `zona_horaria` VARCHAR(80) NOT NULL DEFAULT 'America/Caracas',
+  `inicio_base` DATETIME NOT NULL, `duracion_minutos` SMALLINT UNSIGNED NOT NULL DEFAULT 60,
+  `recurrencia` ENUM('unica','semanal','quincenal','mensual') NOT NULL DEFAULT 'unica',
+  `recurrencia_hasta` DATE NULL, `estado` ENUM('activa','cancelada','cerrada') NOT NULL DEFAULT 'activa',
+  `creado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `actualizado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), KEY `ix_reuniones_proyecto` (`proyecto_id`,`estado`),
+  CONSTRAINT `fk_reuniones_proyecto` FOREIGN KEY (`proyecto_id`) REFERENCES `proyectos` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_reuniones_organizador` FOREIGN KEY (`organizador_id`) REFERENCES `personas` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS `reunion_instancias` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `reunion_id` INT UNSIGNED NOT NULL,
+  `inicio` DATETIME NOT NULL, `fin` DATETIME NOT NULL,
+  `estado` ENUM('pautada','realizada','cancelada','reprogramada') NOT NULL DEFAULT 'pautada',
+  `creado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `actualizado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), UNIQUE KEY `uq_reunion_instancia` (`reunion_id`,`inicio`), KEY `ix_instancias_inicio` (`inicio`,`estado`),
+  CONSTRAINT `fk_instancia_reunion` FOREIGN KEY (`reunion_id`) REFERENCES `reuniones` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS `reunion_participantes` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `reunion_id` INT UNSIGNED NOT NULL,
+  `persona_id` INT UNSIGNED NULL, `nombre_externo` VARCHAR(160) NULL, `email_externo` VARCHAR(255) NULL,
+  `confirmacion` ENUM('pendiente','aceptada','rechazada') NOT NULL DEFAULT 'pendiente', `asistio` TINYINT(1) NULL,
+  PRIMARY KEY (`id`), KEY `ix_participantes_reunion` (`reunion_id`),
+  CONSTRAINT `fk_participante_reunion` FOREIGN KEY (`reunion_id`) REFERENCES `reuniones` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_participante_persona` FOREIGN KEY (`persona_id`) REFERENCES `personas` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS `reunion_minutas` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `instancia_id` INT UNSIGNED NOT NULL,
+  `notas` LONGTEXT NULL, `resumen` TEXT NULL,
+  `estado` ENUM('borrador','publicada') NOT NULL DEFAULT 'borrador',
+  `creado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `actualizado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), UNIQUE KEY `uq_minuta_instancia` (`instancia_id`),
+  CONSTRAINT `fk_minuta_instancia` FOREIGN KEY (`instancia_id`) REFERENCES `reunion_instancias` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS `reunion_elementos` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `minuta_id` INT UNSIGNED NOT NULL,
+  `tipo` ENUM('decision','aprendizaje','resultado','bloqueo','proximo_paso') NOT NULL,
+  `titulo` VARCHAR(255) NOT NULL, `detalle` TEXT NULL,
+  `polaridad` ENUM('positiva','neutral','negativa') NOT NULL DEFAULT 'neutral',
+  `responsable_id` INT UNSIGNED NULL, `fecha_objetivo` DATE NULL, `evidencia` VARCHAR(1000) NULL,
+  `estado` ENUM('propuesto','validado','descartado') NOT NULL DEFAULT 'validado', `tarea_id` INT UNSIGNED NULL,
+  `creado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), KEY `ix_elementos_minuta` (`minuta_id`,`tipo`,`estado`),
+  CONSTRAINT `fk_elemento_minuta` FOREIGN KEY (`minuta_id`) REFERENCES `reunion_minutas` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_elemento_responsable` FOREIGN KEY (`responsable_id`) REFERENCES `personas` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_elemento_tarea` FOREIGN KEY (`tarea_id`) REFERENCES `tareas` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS `impactos_proyecto` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT, `proyecto_id` INT UNSIGNED NOT NULL,
+  `tipo` ENUM('oportunidad','riesgo') NOT NULL, `titulo` VARCHAR(255) NOT NULL, `descripcion` TEXT NULL,
+  `probabilidad` TINYINT UNSIGNED NOT NULL DEFAULT 3, `impacto` TINYINT UNSIGNED NOT NULL DEFAULT 3,
+  `responsable_id` INT UNSIGNED NULL, `evidencia` VARCHAR(1000) NULL, `plan_accion` TEXT NULL,
+  `fecha_objetivo` DATE NULL,
+  `estado` ENUM('identificado','evaluando','planificado','materializado','mitigado','descartado') NOT NULL DEFAULT 'identificado',
+  `origen` ENUM('manual','reunion','ia') NOT NULL DEFAULT 'manual',
+  `creado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `actualizado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), KEY `ix_impactos_proyecto` (`proyecto_id`,`tipo`,`estado`),
+  CONSTRAINT `fk_impacto_proyecto` FOREIGN KEY (`proyecto_id`) REFERENCES `proyectos` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_impacto_responsable` FOREIGN KEY (`responsable_id`) REFERENCES `personas` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `ck_impacto_valores` CHECK (`probabilidad` BETWEEN 1 AND 5 AND `impacto` BETWEEN 1 AND 5)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS `relaciones_semanticas` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `origen_tipo` ENUM('proyecto','tarea','persona','hito','reunion','aprendizaje','impacto') NOT NULL, `origen_id` INT UNSIGNED NOT NULL,
+  `destino_tipo` ENUM('proyecto','tarea','persona','hito','reunion','aprendizaje','impacto') NOT NULL, `destino_id` INT UNSIGNED NOT NULL,
+  `tipo` ENUM('relaciona','contribuye','depende','reutiliza','aprendido_de','impacta','continua','contradice','duplica') NOT NULL DEFAULT 'relaciona',
+  `peso` DECIMAL(3,2) NOT NULL DEFAULT 1.00, `evidencia` VARCHAR(1000) NULL,
+  `origen` ENUM('manual','ia') NOT NULL DEFAULT 'manual', `estado` ENUM('propuesta','validada','descartada') NOT NULL DEFAULT 'validada',
+  `creado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`), UNIQUE KEY `uq_relacion_semantica` (`origen_tipo`,`origen_id`,`destino_tipo`,`destino_id`,`tipo`),
+  KEY `ix_relacion_destino` (`destino_tipo`,`destino_id`),
+  CONSTRAINT `ck_relacion_no_misma` CHECK (NOT (`origen_tipo` = `destino_tipo` AND `origen_id` = `destino_id`)),
+  CONSTRAINT `ck_relacion_peso` CHECK (`peso` BETWEEN 0 AND 1)
 ) ENGINE=InnoDB;
 
 -- ============================================================================
@@ -836,6 +928,7 @@ SELECT
   p.prioridad,
   p.salud,
   p.progreso_pct,
+  p.archivado,
   c.nombre  AS categoria,
   e.nombre  AS empresa,
   CONCAT_WS(' ', r.nombre, r.apellido) AS responsable,
@@ -857,8 +950,7 @@ SELECT
 FROM proyectos p
 LEFT JOIN categorias c ON c.id = p.categoria_id
 LEFT JOIN empresas   e ON e.id = p.empresa_id
-LEFT JOIN personas   r ON r.id = p.responsable_id
-WHERE p.archivado = 0;
+LEFT JOIN personas   r ON r.id = p.responsable_id;
 
 -- Carga de trabajo por persona: insumo directo para detectar sobrecarga.
 CREATE OR REPLACE VIEW `v_carga_personas` AS

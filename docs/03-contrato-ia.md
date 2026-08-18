@@ -156,17 +156,15 @@ import { promptSistema, mensajeUsuario, PROMPT_VERSION } from '@/lib/ai/prompts'
 
 const openai = new OpenAI();
 
-const respuesta = await openai.chat.completions.create({
+const respuesta = await openai.responses.create({
   model: process.env.OPENAI_MODEL!,
-  temperature: 0.2,               // análisis, no creatividad
-  messages: [
-    { role: 'system', content: promptSistema('salud_proyecto') },
-    { role: 'user',   content: mensajeUsuario(payload) },
-  ],
-  response_format: formatoRespuesta('salud_proyecto'),
+  reasoning: { effort: 'max' },
+  instructions: promptSistema('salud_proyecto'),
+  input: mensajeUsuario(payload),
+  text: { format: formatoRespuesta('salud_proyecto') },
 });
 
-const datos = JSON.parse(respuesta.choices[0].message.content!);
+const datos = JSON.parse(respuesta.output_text);
 ```
 
 ### Campos que aparecen en casi todas las respuestas
@@ -251,7 +249,9 @@ La selección de modelo por tipo está implementada en `src/lib/ai/modelos.ts` (
 | `planteamiento_proyecto`, `tareas_sugeridas` | `OPENAI_MODEL_TEXTO` | Solo texto: redacción sobre una descripción |
 | `priorizacion_diaria` | `OPENAI_MODEL_BARATO` | Corre todos los días y es más mecánico |
 
-Las variables específicas caen en `OPENAI_MODEL` si están vacías.
+Las variables específicas caen en `OPENAI_MODEL` si están vacías. El esfuerzo
+se configura de la misma manera con `OPENAI_REASONING_EFFORT` y sus variantes
+`_TEXTO` y `_BARATO`.
 
 
 ---

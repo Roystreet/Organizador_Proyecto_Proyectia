@@ -472,14 +472,12 @@ Tres reglas del modo estricto que hay que respetar al escribir los esquemas:
 3. No se admiten `minimum`, `maximum`, `minItems` ni `pattern`. Los rangos se explican en `description` y se validan con Zod al guardar.
 
 ```ts
-const respuesta = await openai.chat.completions.create({
+const respuesta = await openai.responses.create({
   model: process.env.OPENAI_MODEL!,
-  temperature: 0.2,                 // análisis, no creatividad
-  messages: [
-    { role: 'system', content: promptSistema('salud_proyecto') },
-    { role: 'user',   content: mensajeUsuario(payload) },
-  ],
-  response_format: formatoRespuesta('salud_proyecto'),
+  reasoning: { effort: 'max' },
+  instructions: promptSistema('salud_proyecto'),
+  input: mensajeUsuario(payload),
+  text: { format: formatoRespuesta('salud_proyecto') },
 });
 ```
 

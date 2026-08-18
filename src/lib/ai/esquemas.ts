@@ -9,10 +9,10 @@
  *      en "description" y se validan después con Zod al guardar en la BD.
  *
  * Uso:
- *   const r = await openai.chat.completions.create({
+ *   const r = await openai.responses.create({
  *     model: process.env.OPENAI_MODEL!,
- *     messages: [...],
- *     response_format: formatoRespuesta('salud_proyecto'),
+ *     input: '...',
+ *     text: { format: formatoRespuesta('salud_proyecto') },
  *   });
  */
 
@@ -448,10 +448,8 @@ export function formatoRespuesta(clave: ClaveEsquema) {
   const { nombre, esquema } = ESQUEMAS[clave];
   return {
     type: 'json_schema' as const,
-    json_schema: {
-      name: nombre,
-      strict: true,
-      schema: esquema,
-    },
+    name: nombre,
+    strict: true,
+    schema: esquema,
   };
 }

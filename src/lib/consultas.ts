@@ -14,6 +14,7 @@ export interface FilaResumenProyecto {
   prioridad: Prioridad;
   salud: Salud;
   progreso_pct: number;
+  archivado: number;
   categoria: string | null;
   empresa: string | null;
   responsable: string | null;
@@ -57,6 +58,10 @@ export interface FilaCuelloBotella {
 
 export interface FilaTarea {
   id: number;
+  proyecto_id: number;
+  hito_id: number | null;
+  sprint_id: number | null;
+  tarea_padre_id: number | null;
   titulo: string;
   descripcion: string | null;
   tipo: string;
@@ -64,6 +69,7 @@ export interface FilaTarea {
   prioridad: Prioridad;
   responsable_id: number | null;
   responsable: string | null;
+  fecha_inicio: string | null;
   fecha_vencimiento: string | null;
   dias_para_vencer: number | null;
   dias_en_estado_actual: number;
@@ -73,6 +79,7 @@ export interface FilaTarea {
   hito: string | null;
   bloquea_a: string | null;
   depende_de: string | null;
+  version: number;
 }
 
 export interface FilaAsunto {
@@ -146,17 +153,23 @@ export interface FilaRecomendacion {
 /*  Consultas                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export const resumenProyectos = () =>
+/**
+ * Listado del portafolio. La vista dejó de filtrar `archivado` para que la
+ * ficha de un proyecto archivado se pueda abrir y restaurar; el filtro vive
+ * ahora aquí, donde se puede desactivar.
+ */
+export const resumenProyectos = (incluirArchivados = false) =>
   // El JOIN trae `wizard_paso` sin tener que recrear la vista.
   filas<FilaResumenProyecto & { wizard_paso: number | null }>(`
     SELECT v.*, p.wizard_paso
       FROM v_resumen_proyectos v
       JOIN proyectos p ON p.id = v.id
+     WHERE ? = 1 OR v.archivado = 0
     ORDER BY p.wizard_paso IS NULL,
              FIELD(v.prioridad,'critica','alta','media','baja'),
              FIELD(v.estado,'en_progreso','en_revision','planificacion','en_pausa','idea','completado','cancelado'),
              v.codigo
-  `);
+  `, [incluirArchivados ? 1 : 0]);
 
 export const proyectoPorId = (id: number) =>
   fila<FilaResumenProyecto & {
@@ -172,6 +185,45 @@ export const proyectoPorId = (id: number) =>
        FROM v_resumen_proyectos v
        JOIN proyectos p ON p.id = v.id
       WHERE v.id = ?`,
+    [id],
+  );
+
+/**
+ * Contadores para los badges de las pestañas de la ficha. Tareas y asuntos ya
+ * vienen en `proyectoPorId`; esto solo añade lo que la vista no agrega.
+ */
+export const contadoresProyecto = (id: number) =>
+  fila<{ reuniones_proximas: number; impactos_abiertos: number }>(
+    `SELECT
+       (SELECT COUNT(*) FROM reunion_instancias i
+          JOIN reuniones r ON r.id = i.reunion_id
+         WHERE r.proyecto_id = ? AND i.estado = 'pautada' AND i.inicio >= NOW()) AS reuniones_proximas,
+       (SELECT COUNT(*) FROM impactos_proyecto x
+         WHERE x.proyecto_id = ? AND x.estado NOT IN ('mitigado','descartado')) AS impactos_abiertos`,
+    [id, id],
+  );
+
+/**
+ * Qué se lleva por delante un borrado definitivo. Se enseña en el diálogo de
+ * confirmación: borrar un proyecto no es reversible y conviene ver el precio.
+ */
+export const resumenBorradoProyecto = (id: number) =>
+  fila<{
+    codigo: string; nombre: string;
+    tareas: number; asuntos: number; hitos: number;
+    reuniones: number; minutas: number; impactos: number;
+  }>(
+    `SELECT p.codigo, p.nombre,
+       (SELECT COUNT(*) FROM tareas  t WHERE t.proyecto_id = p.id) AS tareas,
+       (SELECT COUNT(*) FROM asuntos a WHERE a.proyecto_id = p.id) AS asuntos,
+       (SELECT COUNT(*) FROM hitos   h WHERE h.proyecto_id = p.id) AS hitos,
+       (SELECT COUNT(*) FROM reuniones r WHERE r.proyecto_id = p.id) AS reuniones,
+       (SELECT COUNT(*) FROM reunion_minutas m
+          JOIN reunion_instancias i ON i.id = m.instancia_id
+          JOIN reuniones r ON r.id = i.reunion_id
+         WHERE r.proyecto_id = p.id) AS minutas,
+       (SELECT COUNT(*) FROM impactos_proyecto x WHERE x.proyecto_id = p.id) AS impactos
+     FROM proyectos p WHERE p.id = ?`,
     [id],
   );
 
@@ -229,9 +281,10 @@ export const kpisPortafolio = () =>
 
 export const tareasDeProyecto = (id: number) =>
   filas<FilaTarea>(
-    `SELECT t.id, t.titulo, t.descripcion, t.tipo, t.estado, t.prioridad,
+    `SELECT t.id, t.proyecto_id, t.hito_id, t.sprint_id, t.tarea_padre_id,
+            t.titulo, t.descripcion, t.tipo, t.estado, t.prioridad,
             t.responsable_id, CONCAT_WS(' ', pe.nombre, pe.apellido) AS responsable,
-            t.fecha_vencimiento,
+            t.fecha_inicio, t.fecha_vencimiento, t.version,
             DATEDIFF(t.fecha_vencimiento, CURDATE())                 AS dias_para_vencer,
             DATEDIFF(CURDATE(), COALESCE(t.bloqueada_desde, t.actualizado_en)) AS dias_en_estado_actual,
             t.estimacion_horas, t.progreso_pct, t.motivo_bloqueo,

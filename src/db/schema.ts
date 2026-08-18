@@ -487,6 +487,7 @@ export const tareas = mysqlTable('tareas', {
   motivoBloqueo: varchar('motivo_bloqueo', { length: 500 }),
   bloqueadaDesde: datetime('bloqueada_desde'),
   orden: int('orden').notNull().default(0),
+  version: int('version', { unsigned: true }).notNull().default(1),
   creadoEn: datetime('creado_en').notNull().default(ahora),
   actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
 }, (t) => ({
@@ -634,7 +635,73 @@ export const adjuntos = mysqlTable('adjuntos', {
 }));
 
 /* -------------------------------------------------------------------------- */
-/*  8 · MOTOR DE IA                                                            */
+/*  8 · REUNIONES, CONOCIMIENTO Y RELACIONES                                  */
+/* -------------------------------------------------------------------------- */
+
+export const reuniones = mysqlTable('reuniones', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(),
+  proyectoId: int('proyecto_id', { unsigned: true }).notNull().references(() => proyectos.id, { onDelete: 'cascade' }),
+  titulo: varchar('titulo', { length: 255 }).notNull(), objetivo: text('objetivo'), agenda: text('agenda'),
+  organizadorId: int('organizador_id', { unsigned: true }).references(() => personas.id, { onDelete: 'set null' }),
+  modalidad: mysqlEnum('modalidad', ['presencial', 'virtual', 'hibrida']).notNull().default('virtual'),
+  ubicacion: varchar('ubicacion', { length: 255 }), enlace: varchar('enlace', { length: 500 }),
+  zonaHoraria: varchar('zona_horaria', { length: 80 }).notNull().default('America/Caracas'),
+  inicioBase: datetime('inicio_base').notNull(), duracionMinutos: smallint('duracion_minutos', { unsigned: true }).notNull().default(60),
+  recurrencia: mysqlEnum('recurrencia', ['unica', 'semanal', 'quincenal', 'mensual']).notNull().default('unica'),
+  recurrenciaHasta: date('recurrencia_hasta'),
+  estado: mysqlEnum('estado', ['activa', 'cancelada', 'cerrada']).notNull().default('activa'),
+  creadoEn: datetime('creado_en').notNull().default(ahora), actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
+}, (t) => ({ proyectoIx: index('ix_reuniones_proyecto').on(t.proyectoId, t.estado) }));
+
+export const reunionInstancias = mysqlTable('reunion_instancias', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(),
+  reunionId: int('reunion_id', { unsigned: true }).notNull().references(() => reuniones.id, { onDelete: 'cascade' }),
+  inicio: datetime('inicio').notNull(), fin: datetime('fin').notNull(),
+  estado: mysqlEnum('estado', ['pautada', 'realizada', 'cancelada', 'reprogramada']).notNull().default('pautada'),
+  creadoEn: datetime('creado_en').notNull().default(ahora), actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
+}, (t) => ({ uq: uniqueIndex('uq_reunion_instancia').on(t.reunionId, t.inicio), inicioIx: index('ix_instancias_inicio').on(t.inicio, t.estado) }));
+
+export const reunionParticipantes = mysqlTable('reunion_participantes', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(), reunionId: int('reunion_id', { unsigned: true }).notNull().references(() => reuniones.id, { onDelete: 'cascade' }),
+  personaId: int('persona_id', { unsigned: true }).references(() => personas.id, { onDelete: 'set null' }),
+  nombreExterno: varchar('nombre_externo', { length: 160 }), emailExterno: varchar('email_externo', { length: 255 }),
+  confirmacion: mysqlEnum('confirmacion', ['pendiente', 'aceptada', 'rechazada']).notNull().default('pendiente'), asistio: boolean('asistio'),
+}, (t) => ({ reunionIx: index('ix_participantes_reunion').on(t.reunionId) }));
+
+export const reunionMinutas = mysqlTable('reunion_minutas', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(), instanciaId: int('instancia_id', { unsigned: true }).notNull().references(() => reunionInstancias.id, { onDelete: 'cascade' }),
+  notas: longtext('notas'), resumen: text('resumen'), estado: mysqlEnum('estado', ['borrador', 'publicada']).notNull().default('borrador'),
+  creadoEn: datetime('creado_en').notNull().default(ahora), actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
+}, (t) => ({ instanciaUq: uniqueIndex('uq_minuta_instancia').on(t.instanciaId) }));
+
+export const reunionElementos = mysqlTable('reunion_elementos', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(), minutaId: int('minuta_id', { unsigned: true }).notNull().references(() => reunionMinutas.id, { onDelete: 'cascade' }),
+  tipo: mysqlEnum('tipo', ['decision', 'aprendizaje', 'resultado', 'bloqueo', 'proximo_paso']).notNull(), titulo: varchar('titulo', { length: 255 }).notNull(), detalle: text('detalle'),
+  polaridad: mysqlEnum('polaridad', ['positiva', 'neutral', 'negativa']).notNull().default('neutral'), responsableId: int('responsable_id', { unsigned: true }).references(() => personas.id, { onDelete: 'set null' }),
+  fechaObjetivo: date('fecha_objetivo'), evidencia: varchar('evidencia', { length: 1000 }), estado: mysqlEnum('estado', ['propuesto', 'validado', 'descartado']).notNull().default('validado'),
+  tareaId: int('tarea_id', { unsigned: true }).references(() => tareas.id, { onDelete: 'set null' }), creadoEn: datetime('creado_en').notNull().default(ahora),
+}, (t) => ({ minutaIx: index('ix_elementos_minuta').on(t.minutaId, t.tipo, t.estado) }));
+
+export const impactosProyecto = mysqlTable('impactos_proyecto', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(), proyectoId: int('proyecto_id', { unsigned: true }).notNull().references(() => proyectos.id, { onDelete: 'cascade' }),
+  tipo: mysqlEnum('tipo', ['oportunidad', 'riesgo']).notNull(), titulo: varchar('titulo', { length: 255 }).notNull(), descripcion: text('descripcion'),
+  probabilidad: tinyint('probabilidad', { unsigned: true }).notNull().default(3), impacto: tinyint('impacto', { unsigned: true }).notNull().default(3),
+  responsableId: int('responsable_id', { unsigned: true }).references(() => personas.id, { onDelete: 'set null' }), evidencia: varchar('evidencia', { length: 1000 }), planAccion: text('plan_accion'), fechaObjetivo: date('fecha_objetivo'),
+  estado: mysqlEnum('estado', ['identificado', 'evaluando', 'planificado', 'materializado', 'mitigado', 'descartado']).notNull().default('identificado'), origen: mysqlEnum('origen', ['manual', 'reunion', 'ia']).notNull().default('manual'),
+  creadoEn: datetime('creado_en').notNull().default(ahora), actualizadoEn: datetime('actualizado_en').notNull().default(ahoraAlActualizar),
+}, (t) => ({ proyectoIx: index('ix_impactos_proyecto').on(t.proyectoId, t.tipo, t.estado) }));
+
+export const relacionesSemanticas = mysqlTable('relaciones_semanticas', {
+  id: int('id', { unsigned: true }).autoincrement().primaryKey(),
+  origenTipo: mysqlEnum('origen_tipo', ['proyecto', 'tarea', 'persona', 'hito', 'reunion', 'aprendizaje', 'impacto']).notNull(), origenId: int('origen_id', { unsigned: true }).notNull(),
+  destinoTipo: mysqlEnum('destino_tipo', ['proyecto', 'tarea', 'persona', 'hito', 'reunion', 'aprendizaje', 'impacto']).notNull(), destinoId: int('destino_id', { unsigned: true }).notNull(),
+  tipo: mysqlEnum('tipo', ['relaciona', 'contribuye', 'depende', 'reutiliza', 'aprendido_de', 'impacta', 'continua', 'contradice', 'duplica']).notNull().default('relaciona'),
+  peso: decimal('peso', { precision: 3, scale: 2 }).notNull().default('1.00'), evidencia: varchar('evidencia', { length: 1000 }), origen: mysqlEnum('origen', ['manual', 'ia']).notNull().default('manual'),
+  estado: mysqlEnum('estado', ['propuesta', 'validada', 'descartada']).notNull().default('validada'), creadoEn: datetime('creado_en').notNull().default(ahora),
+}, (t) => ({ uq: uniqueIndex('uq_relacion_semantica').on(t.origenTipo, t.origenId, t.destinoTipo, t.destinoId, t.tipo), destinoIx: index('ix_relacion_destino').on(t.destinoTipo, t.destinoId) }));
+
+/* -------------------------------------------------------------------------- */
+/*  9 · MOTOR DE IA                                                            */
 /* -------------------------------------------------------------------------- */
 
 export const analisisIa = mysqlTable('analisis_ia', {

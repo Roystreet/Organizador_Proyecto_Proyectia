@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import ThemeRegistry from '@/theme/ThemeRegistry';
 import Shell from '@/components/Shell';
+import '@xyflow/react/dist/style.css';
 
 export const metadata: Metadata = {
   title: 'Organizador de Proyectos',

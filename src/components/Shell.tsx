@@ -11,6 +11,9 @@ import SpaceDashboardOutlined from '@mui/icons-material/SpaceDashboardOutlined';
 import FolderOutlined from '@mui/icons-material/FolderOutlined';
 import GroupsOutlined from '@mui/icons-material/GroupsOutlined';
 import BusinessOutlined from '@mui/icons-material/BusinessOutlined';
+import EventOutlined from '@mui/icons-material/EventOutlined';
+import HubOutlined from '@mui/icons-material/HubOutlined';
+import LightbulbOutlined from '@mui/icons-material/LightbulbOutlined';
 import DarkModeOutlined from '@mui/icons-material/DarkModeOutlined';
 import LightModeOutlined from '@mui/icons-material/LightModeOutlined';
 import { useModoColor } from '@/theme/ThemeRegistry';
@@ -22,6 +25,9 @@ const NAV = [
   { href: '/proyectos', etiqueta: 'Proyectos', Icono: FolderOutlined },
   { href: '/personas',  etiqueta: 'Personas',  Icono: GroupsOutlined },
   { href: '/empresas',  etiqueta: 'Empresas',  Icono: BusinessOutlined },
+  { href: '/agenda', etiqueta: 'Agenda', Icono: EventOutlined },
+  { href: '/aprendizajes', etiqueta: 'Aprendizajes', Icono: LightbulbOutlined },
+  { href: '/grafo', etiqueta: 'Grafo', Icono: HubOutlined },
 ];
 
 export default function Shell({ children }: { children: React.ReactNode }) {

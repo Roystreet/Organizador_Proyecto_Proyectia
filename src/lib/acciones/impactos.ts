@@ -1,0 +1,8 @@
+'use server';
+import { revalidatePath } from 'next/cache';
+import { z } from 'zod';
+import { pool } from '@/db';
+import { registrarEnBitacora } from '@/lib/bitacora';
+
+const schema=z.object({proyectoId:z.number().int().positive(),tipo:z.enum(['oportunidad','riesgo']),titulo:z.string().min(3).max(255),descripcion:z.string().max(5000).nullable(),probabilidad:z.number().int().min(1).max(5),impacto:z.number().int().min(1).max(5),responsableId:z.number().int().positive().nullable(),evidencia:z.string().max(1000).nullable(),planAccion:z.string().max(5000).nullable(),fechaObjetivo:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable()});
+export async function crearImpacto(entrada:z.input<typeof schema>){const p=schema.safeParse(entrada);if(!p.success)return{ok:false,mensaje:p.error.issues[0]?.message??'Datos inválidos'};const v=p.data;const cx=await pool.getConnection();try{await cx.beginTransaction();const[res]=await cx.query(`INSERT INTO impactos_proyecto (proyecto_id,tipo,titulo,descripcion,probabilidad,impacto,responsable_id,evidencia,plan_accion,fecha_objetivo) VALUES (?,?,?,?,?,?,?,?,?,?)`,[v.proyectoId,v.tipo,v.titulo,v.descripcion,v.probabilidad,v.impacto,v.responsableId,v.evidencia,v.planAccion,v.fechaObjetivo]);const id=(res as{insertId:number}).insertId;await registrarEnBitacora(cx,{entidadTipo:'proyecto',entidadId:v.proyectoId,proyectoId:v.proyectoId,accion:'crear',campo:v.tipo,valorNuevo:v.titulo});await cx.commit();revalidatePath(`/proyectos/${v.proyectoId}`);revalidatePath('/grafo');return{ok:true,id};}catch(e){await cx.rollback();return{ok:false,mensaje:e instanceof Error?e.message:'No se pudo guardar'};}finally{cx.release();}}
